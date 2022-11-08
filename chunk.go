@@ -1,0 +1,31 @@
+package gobonding
+
+import "encoding/binary"
+
+const (
+	MTU = 1300
+
+	// BUFFERSIZE is size of buffer to receive packets
+	// (little bit bigger than maximum)
+	BUFFERSIZE = 1518
+)
+
+type Chunk struct {
+	Data [BUFFERSIZE + 2]byte
+	Idx  uint16
+	Size uint16
+}
+
+func (c *Chunk) Buffer() []byte {
+	return c.Data[2 : BUFFERSIZE+2]
+}
+
+func (c *Chunk) ToSend() []byte {
+	binary.BigEndian.PutUint16(c.Data[0:2], c.Idx)
+	return c.Data[0 : c.Size+2]
+}
+
+func (c *Chunk) Decode(size uint16) {
+	c.Idx = binary.BigEndian.Uint16(c.Data[0:2])
+	c.Size = size
+}

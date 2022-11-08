@@ -1,129 +1,165 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
-	"github.com/songgao/water"
-	"golang.org/x/net/ipv4"
-	"gopkg.in/yaml.v2"
+	"github.com/kochelmonster/gobonding"
+	"github.com/lucas-clemente/quic-go"
 )
 
-const (
-	// AppVersion contains current application version for -version command flag
-	AppVersion = "0.1.0a"
-)
-
-const (
-	// I use TUN interface, so only plain IP packet,
-	// no ethernet header + mtu is set to 1300
-
-	// BUFFERSIZE is size of buffer to receive packets
-	// (little bit bigger than maximum)
-	BUFFERSIZE = 1518
-)
-
-type Config struct {
-	TunName  string
-	LocalIp  string
-	ProxyIP  string
-	Channels []string
-}
-
-/*
-func rcvrThread(config *Config, iface *water.Interface) {
-	for {
-		n, _, err := conn.ReadFrom(encrypted)
-		if err != nil {
-			log.Println("Error: ", err)
-			continue
-		}
-
-		// ReadFromUDP can return 0 bytes on timeout
-		if 0 == n {
-			continue
-		}
-
-		conf := config.Load().(VPNState)
-
-		if !conf.Main.main.CheckSize(n) {
-			log.Println("invalid packet size ", n)
-			continue
-		}
-
-		n, err = iface.Write(decrypted[:size])
-		if nil != err {
-			log.Println("Error writing to local interface: ", err)
-		} else if n != size {
-			log.Println("Partial package written to local interface")
-		}
+func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManager, config *gobonding.Config) {
+	laddr, err := gobonding.ToIP(config.Channels[channelIdx])
+	if err != nil {
+		panic(err)
 	}
-}*/
 
-func sndrThread(config *Config, iface *water.Interface) {
-	// first time fill with random numbers
-	var packet = make([]byte, BUFFERSIZE)
+	tlsCert, err := tls.X509KeyPair([]byte(config.Certificate), []byte(config.PrivateKey))
+	if err != nil {
+		panic(err)
+	}
+	tlsConf := &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"bonding-proxy"},
+		Certificates:       []tls.Certificate{tlsCert},
+		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			for _, c1 := range rawCerts {
+				for _, c2 := range tlsCert.Certificate {
+					if bytes.Equal(c1, c2) {
+						log.Println("Certificates Equal")
+						return nil
+					}
+				}
+			}
+			return errors.New("certificates not equal")
+		},
+	}
+
+	run := func() {
+		raddr, err := net.ResolveUDPAddr("udp", config.ProxyIP)
+		if err != nil {
+			log.Println("Cannot Resolve address", config.ProxyIP, err)
+			return
+		}
+
+		udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: laddr, Port: 0})
+		if err != nil {
+			panic(err)
+		}
+
+		conn, err := quic.DialContext(ctx, udpConn, raddr, config.ProxyIP, tlsConf, nil)
+		if err != nil {
+			return
+		}
+
+		stream, err := conn.OpenStreamSync(ctx)
+		if err != nil {
+			return
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case chunk := <-cm.DispatchChannel:
+					_, err := stream.Write(chunk.ToSend())
+					if err != nil {
+						// send chunk via other ProxyChannels
+						cm.DispatchChannel <- chunk
+						return
+					} else {
+						cm.FreeChunk(chunk)
+					}
+
+				case <-ctx.Done():
+					stream.Close()
+					return
+				}
+			}
+		}()
+
+		go func() {
+			defer wg.Done()
+
+			for {
+				chunk := cm.AllocChunk()
+				size, err := stream.Read(chunk.Buffer())
+				if err != nil {
+					cm.FreeChunk(chunk)
+					stream.Close()
+					return
+				}
+
+				chunk.Decode(uint16(size))
+				select {
+				case cm.CollectChannel <- chunk:
+				case <-ctx.Done():
+					cm.FreeChunk(chunk)
+					return
+				}
+			}
+		}()
+
+		wg.Wait()
+	}
 
 	for {
-		_, err := iface.Read(packet[:MTU])
-		if err != nil {
-			break
-		}
-		header, err := ipv4.ParseHeader(packet)
-		if err != nil {
-			log.Println("Error parsing package", err)
-		}
-		log.Println("IPv4 packet", header)
-		continue
-
+		run()
+		time.Sleep(20 * time.Second)
 	}
 }
 
 func main() {
 	confName := flag.String("config file", "gobonding.yml", "Configuration file name")
-	version := flag.Bool("version", false, "print lcvpn version")
+	version := flag.Bool("version", false, "print gobonding version")
 	flag.Parse()
 
 	if *version {
-		fmt.Println(AppVersion)
+		fmt.Println(gobonding.AppVersion)
 		os.Exit(0)
 	}
 
-	config := Config{}
-	data, err := os.ReadFile(*confName)
-	if err != nil {
-		panic(err)
-	}
-	err = yaml.Unmarshal(data, &config)
+	config, err := gobonding.LoadConfig(*confName)
 	if err != nil {
 		panic(err)
 	}
 
-	iface, localCIDR := ifaceSetup(config.LocalIp)
-	addRoutes(localCIDR)
-	defer ifaceShutdown()
+	ctx := context.Background()
+	ctx, cancel := context.WithCancel(ctx)
+
+	iface := gobonding.IfaceSetup(config.LocalCIDR)
 
 	// start routes changes in config monitoring
 	log.Println("Interface parameters configured", iface)
 
-	// Start listen threads
-	// go rcvrThread(&config, iface)
+	cm := gobonding.NewConnMananger(ctx, config)
 
-	// Start sender threads
-	go sndrThread(&config, iface)
+	for i := range config.Channels {
+		createChannel(ctx, i, cm, config)
+	}
+
+	go gobonding.WriteToIface(ctx, iface, cm)
+	go gobonding.ReadFromIface(ctx, iface, cm)
 
 	exitChan := make(chan os.Signal, 1)
 	signal.Notify(exitChan, syscall.SIGTERM)
 	signal.Notify(exitChan, syscall.SIGINT)
 
 	<-exitChan
-
-	/*err = writeConn.Close()
-	if nil != err {
-		log.Println("Error closing UDP connection: ", err)
-	}*/
+	cancel()
 }
