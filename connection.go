@@ -41,7 +41,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		DispatchChannel: make(chan *Chunk, 10),
 		CollectChannel:  make(chan *Chunk, 10),
 		OrderedChannel:  make(chan *Chunk, 10),
-		ChunkSupply:     make([]*Chunk, 10),
+		ChunkSupply:     make([]*Chunk, 0),
 		Queue:           queue,
 	}
 	go func() {

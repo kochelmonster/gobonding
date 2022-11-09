@@ -110,7 +110,7 @@ func main() {
 		panic(err)
 	}
 
-	iface := gobonding.IfaceSetup(config.LocalCIDR)
+	iface := gobonding.IfaceSetup(config.ProxyTunName)
 
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)

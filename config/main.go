@@ -45,8 +45,7 @@ func main() {
 	config := gobonding.Config{
 		RouterTunName: "tun0",
 		ProxyTunName:  "tun0",
-		LocalCIDR:     "192.168.57.1/24",
-		ProxyIP:       "myproxy.net",
+		ProxyIP:       "myproxy.net:41414",
 		Channels:      []string{"wan1", "wan2"},
 		PrivateKey:    string(keyPEM),
 		Certificate:   string(certPEM),

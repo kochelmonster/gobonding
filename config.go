@@ -10,7 +10,6 @@ type Config struct {
 	// Name of the TUN adapters
 	RouterTunName string
 	ProxyTunName  string
-	LocalCIDR     string
 	OrderWindow   int
 	ProxyIP       string
 	Channels      []string

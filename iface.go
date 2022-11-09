@@ -13,14 +13,10 @@ import (
 )
 
 // ifaceSetup returns new interface OR PANIC!
-func IfaceSetup(localCIDR string) *water.Interface {
-	addr, err := netlink.ParseAddr(localCIDR)
-	if nil != err {
-		log.Fatalln("\nlocal ip is not in ip/cidr format")
-		panic("invalid local ip")
-	}
-
-	iface, err := water.New(water.Config{DeviceType: water.TUN})
+func IfaceSetup(name string) *water.Interface {
+	config := water.Config{DeviceType: water.TUN}
+	config.Name = name
+	iface, err := water.New(config)
 	if nil != err {
 		log.Println("Unable to allocate TUN interface:", err)
 		panic(err)
@@ -35,16 +31,6 @@ func IfaceSetup(localCIDR string) *water.Interface {
 	err = netlink.LinkSetMTU(link, MTU)
 	if nil != err {
 		log.Fatalln("Unable to set MTU to 1300 on interface")
-	}
-
-	err = netlink.AddrAdd(link, addr)
-	if nil != err {
-		log.Fatalln("Unable to set IP to ", addr, " on interface")
-	}
-
-	err = netlink.LinkSetUp(link)
-	if nil != err {
-		log.Fatalln("Unable to UP interface")
 	}
 
 	return iface

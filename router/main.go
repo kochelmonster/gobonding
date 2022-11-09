@@ -142,7 +142,7 @@ func main() {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
-	iface := gobonding.IfaceSetup(config.LocalCIDR)
+	iface := gobonding.IfaceSetup(config.RouterTunName)
 
 	// start routes changes in config monitoring
 	log.Println("Interface parameters configured", iface)
