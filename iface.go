@@ -16,6 +16,7 @@ import (
 func IfaceSetup(name string) *water.Interface {
 	config := water.Config{DeviceType: water.TUN}
 	config.Name = name
+	config.Persist = true
 	iface, err := water.New(config)
 	if nil != err {
 		log.Println("Unable to allocate TUN interface:", err)
