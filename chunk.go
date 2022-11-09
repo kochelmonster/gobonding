@@ -25,7 +25,11 @@ func (c *Chunk) ToSend() []byte {
 	return c.Data[0 : c.Size+2]
 }
 
+/*
+Decodes the transfered message
+size is the received message size inclusive the message order
+*/
 func (c *Chunk) Decode(size uint16) {
 	c.Idx = binary.BigEndian.Uint16(c.Data[0:2])
-	c.Size = size
+	c.Size = size - 2
 }
