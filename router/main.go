@@ -77,6 +77,7 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 
 		if cm.ActiveChannels == 0 {
 			cm.SyncCounter()
+			cm.Clear()
 		}
 		cm.ActiveChannels++
 		var wg sync.WaitGroup
@@ -92,6 +93,8 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 					if err != nil {
 						// send chunk via other ProxyChannels
 						cm.DispatchChannel <- msg
+						log.Println("Close write stream", err)
+						stream.Close()
 						return
 					}
 
@@ -108,6 +111,7 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 			for {
 				message, err := gobonding.ReadMessage(stream, cm)
 				if err != nil {
+					log.Println("Close read stream", err)
 					stream.Close()
 					return
 				}
