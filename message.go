@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 
 	"golang.org/x/net/ipv4"
 )
@@ -67,7 +66,6 @@ func ReadMessage(stream io.Reader, cm *ConnManager) (Message, error) {
 		cm.FreeChunk(chunk)
 		return nil, err
 	}
-	log.Println("Prereceive", chunk)
 	return chunk, nil
 }
 

@@ -63,10 +63,12 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 						result.MsgOrder = result.Queue[len(result.Queue)-1].Idx
 					}
 				}
-				for len(result.Queue) > 0 && result.Queue[len(result.Queue)-1].Idx == result.MsgOrder {
+				for len(result.Queue) > 0 && result.Queue[len(result.Queue)-1].Idx <= result.MsgOrder {
 					chunk = heap.Pop(&result.Queue).(*Chunk)
-					result.OrderedChannel <- chunk
-					result.MsgOrder++
+					if chunk.Idx == result.MsgOrder {
+						result.OrderedChannel <- chunk
+						result.MsgOrder++
+					}
 				}
 
 			case <-ctx.Done():
@@ -76,6 +78,10 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 	}()
 
 	return result
+}
+
+func (cm *ConnManager) Clear() {
+	cm.Queue = cm.Queue[:0]
 }
 
 func (cm *ConnManager) AllocChunk() *Chunk {
