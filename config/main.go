@@ -46,11 +46,11 @@ func main() {
 		RouterTunName: "tun0",
 		ProxyTunName:  "tun0",
 		ProxyIP:       "myproxy.net:41414",
+		ReconnectTime: "20s",
 		Channels:      []string{"wan1", "wan2"},
 		PrivateKey:    string(keyPEM),
 		Certificate:   string(certPEM),
 		OrderWindow:   128,
-		ReconnectTime: "20s",
 	}
 
 	text, err := yaml.Marshal(config)
