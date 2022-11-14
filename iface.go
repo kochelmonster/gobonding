@@ -7,6 +7,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"time"
 
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
@@ -41,7 +42,7 @@ func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager)
 	var counter uint16 = 0
 	for {
 		chunk := cm.AllocChunk()
-		size, err := iface.Read(chunk.Buffer())
+		size, err := iface.Read(chunk.Data[0:])
 		switch err {
 		case io.EOF:
 			return
@@ -57,6 +58,10 @@ func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager)
 
 		select {
 		case cm.DispatchChannel <- chunk:
+
+		case <-time.After(30 * time.Second):
+			cm.SyncCounter()
+
 		case <-ctx.Done():
 			cm.FreeChunk(chunk)
 			return
@@ -69,7 +74,7 @@ func WriteToIface(ctx context.Context, iface *water.Interface, cm *ConnManager) 
 		select {
 		case chunk := <-cm.OrderedChannel:
 			log.Println("Write", chunk)
-			_, err := iface.Write(chunk.Buffer()[:chunk.Size])
+			_, err := iface.Write(chunk.Data[:chunk.Size])
 			if err != nil {
 				log.Println("Error writing packet", err)
 			}

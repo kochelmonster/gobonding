@@ -50,6 +50,7 @@ func main() {
 		PrivateKey:    string(keyPEM),
 		Certificate:   string(certPEM),
 		OrderWindow:   128,
+		ReconnectTime: "20s",
 	}
 
 	text, err := yaml.Marshal(config)

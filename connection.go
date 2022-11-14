@@ -20,7 +20,7 @@ type ConnManager struct {
 	mu sync.Mutex
 
 	// Dispatches chunks on Proxy Channels
-	DispatchChannel chan *Chunk
+	DispatchChannel chan Message
 
 	// Receives unordered chunk of Proxy Channels
 	CollectChannel chan *Chunk
@@ -31,6 +31,10 @@ type ConnManager struct {
 	Queue PriorityQueue
 
 	ChunkSupply []*Chunk
+
+	MsgOrder uint16
+
+	ActiveChannels int
 }
 
 func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
@@ -38,30 +42,31 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 	heap.Init(&queue)
 
 	result := &ConnManager{
-		DispatchChannel: make(chan *Chunk, 10),
+		DispatchChannel: make(chan Message, 10),
 		CollectChannel:  make(chan *Chunk, 10),
 		OrderedChannel:  make(chan *Chunk, 10),
 		ChunkSupply:     make([]*Chunk, 0),
 		Queue:           queue,
+		MsgOrder:        0,
+		ActiveChannels:  0,
 	}
 	go func() {
-		var order uint16 = 0
 		for {
 			select {
 			case chunk := <-result.CollectChannel:
-				if chunk.Idx == order {
+				if chunk.Idx == result.MsgOrder {
 					result.OrderedChannel <- chunk
-					order++
+					result.MsgOrder++
 				} else {
 					heap.Push(&result.Queue, chunk)
 					if len(result.Queue) > config.OrderWindow {
-						order = result.Queue[len(result.Queue)-1].Idx
+						result.MsgOrder = result.Queue[len(result.Queue)-1].Idx
 					}
 				}
-				for len(result.Queue) > 0 && result.Queue[len(result.Queue)-1].Idx == order {
+				for len(result.Queue) > 0 && result.Queue[len(result.Queue)-1].Idx == result.MsgOrder {
 					chunk = heap.Pop(&result.Queue).(*Chunk)
 					result.OrderedChannel <- chunk
-					order++
+					result.MsgOrder++
 				}
 
 			case <-ctx.Done():
@@ -73,13 +78,15 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 	return result
 }
 
-func (d *ConnManager) AllocChunk() *Chunk {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if len(d.ChunkSupply) > 0 {
-		result := d.ChunkSupply[len(d.ChunkSupply)-1]
-		d.ChunkSupply = d.ChunkSupply[:len(d.ChunkSupply)-1]
-		return result
+func (cm *ConnManager) AllocChunk() *Chunk {
+	if len(cm.ChunkSupply) > 0 {
+		cm.mu.Lock()
+		defer cm.mu.Unlock()
+		if len(cm.ChunkSupply) > 0 {
+			result := cm.ChunkSupply[len(cm.ChunkSupply)-1]
+			cm.ChunkSupply = cm.ChunkSupply[:len(cm.ChunkSupply)-1]
+			return result
+		}
 	}
 	return &Chunk{
 		Idx:  0,
@@ -87,12 +94,21 @@ func (d *ConnManager) AllocChunk() *Chunk {
 	}
 }
 
-func (d *ConnManager) FreeChunk(chunk *Chunk) {
-	d.mu.Lock()
-	d.ChunkSupply = append(d.ChunkSupply, chunk)
-	d.mu.Unlock()
+func (cm *ConnManager) FreeChunk(chunk *Chunk) {
+	cm.mu.Lock()
+	cm.ChunkSupply = append(cm.ChunkSupply, chunk)
+	cm.mu.Unlock()
 }
 
+func (cm *ConnManager) SyncCounter() {
+	cm.DispatchChannel <- &SyncOrderMsg{
+		Order: cm.MsgOrder,
+	}
+}
+
+/*
+Parses an ip address or interface name to an ip4 address
+*/
 func ToIP(address string) (net.IP, error) {
 	ip := net.ParseIP(address)
 	if ip == nil {

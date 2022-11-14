@@ -14,7 +14,6 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/kochelmonster/gobonding"
 	"github.com/lucas-clemente/quic-go"
@@ -58,7 +57,6 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 			log.Println("Error Accept", err)
 			return
 		}
-		log.Println("Connection established", conn.RemoteAddr())
 
 		go func() {
 			stream, err := conn.AcceptStream(ctx)
@@ -73,63 +71,38 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 			go func() {
 				defer wg.Done()
 				for {
-					chunk := cm.AllocChunk()
-					size, err := stream.Read(chunk.Data[0:])
+					message, err := gobonding.ReadMessage(stream, cm)
 					if err != nil {
-						cm.FreeChunk(chunk)
-						conn.CloseWithError(1, "stream error")
+						stream.Close()
 						return
 					}
-					if size == 1 {
-						// ping message
-						cm.FreeChunk(chunk)
-						continue
-					}
-					// log.Println("Received buffer", size, chunk.Data[:size])
-					chunk.Decode(uint16(size))
-					log.Println("Receive", chunk)
-					select {
-					case cm.CollectChannel <- chunk:
-					case <-ctx.Done():
-						conn.CloseWithError(2, "close server")
-						return
-					}
+					message.Action(ctx, cm)
 				}
 			}()
 
 			go func() {
 				defer wg.Done()
-				nothing_send := true
 				for {
 					select {
-					case chunk := <-cm.DispatchChannel:
-						nothing_send = false
-						log.Println("Send", chunk, len(chunk.ToSend()))
-						_, err := stream.Write(chunk.ToSend())
+					case msg := <-cm.DispatchChannel:
+						log.Println("Send", msg)
+						err := msg.Write(stream)
 						if err != nil {
-							cm.DispatchChannel <- chunk
+							cm.DispatchChannel <- msg
 							conn.CloseWithError(1, "stream error")
 							return
 						}
-
-					case <-time.After(20 * time.Second):
-						if nothing_send {
-							_, err := stream.Write([]byte{1})
-							if err != nil {
-								stream.Close()
-								return
-							}
-						}
-						nothing_send = true
-
 					case <-ctx.Done():
 						conn.CloseWithError(2, "close server")
 						return
 					}
 				}
 			}()
+			cm.ActiveChannels++
+			log.Println("Connection established", conn.RemoteAddr(), cm.ActiveChannels)
 			wg.Wait()
-			log.Println("Close connection", conn.RemoteAddr())
+			cm.ActiveChannels--
+			log.Println("Close connection", conn.RemoteAddr(), cm.ActiveChannels)
 		}()
 	}
 }

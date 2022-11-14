@@ -15,6 +15,7 @@ type Config struct {
 	Channels      []string
 	PrivateKey    string
 	Certificate   string
+	ReconnectTime string
 }
 
 func LoadConfig(path string) (*Config, error) {

@@ -69,12 +69,16 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 			return
 		}
 
-		_, err = stream.Write([]byte{1})
+		err = (&gobonding.PingMsg{}).Write(stream)
 		if err != nil {
 			stream.Close()
 			return
 		}
 
+		if cm.ActiveChannels == 0 {
+			cm.SyncCounter()
+		}
+		cm.ActiveChannels++
 		var wg sync.WaitGroup
 		wg.Add(2)
 
@@ -82,15 +86,13 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 			defer wg.Done()
 			for {
 				select {
-				case chunk := <-cm.DispatchChannel:
-					log.Println("Send", chunk)
-					_, err := stream.Write(chunk.ToSend())
+				case msg := <-cm.DispatchChannel:
+					log.Println("Send", msg)
+					err := msg.Write(stream)
 					if err != nil {
 						// send chunk via other ProxyChannels
-						cm.DispatchChannel <- chunk
+						cm.DispatchChannel <- msg
 						return
-					} else {
-						cm.FreeChunk(chunk)
 					}
 
 				case <-ctx.Done():
@@ -104,36 +106,30 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 			defer wg.Done()
 
 			for {
-				chunk := cm.AllocChunk()
-				size, err := stream.Read(chunk.Data[0:])
-				log.Println("Prereceive", size, err)
+				message, err := gobonding.ReadMessage(stream, cm)
 				if err != nil {
-					cm.FreeChunk(chunk)
 					stream.Close()
 					return
 				}
-				if size == 1 {
-					// ping message
-					cm.FreeChunk(chunk)
-					continue
-				}
-				chunk.Decode(uint16(size))
-				log.Println("Receive", chunk)
-				select {
-				case cm.CollectChannel <- chunk:
-				case <-ctx.Done():
-					cm.FreeChunk(chunk)
-					return
-				}
+				message.Action(ctx, cm)
 			}
 		}()
 
 		wg.Wait()
+		cm.ActiveChannels--
 	}
 
+	reconnectTime, err := time.ParseDuration(config.ReconnectTime)
+	if err != nil {
+		reconnectTime = 20 * time.Second
+	}
 	for {
 		run()
-		time.Sleep(20 * time.Second)
+		select {
+		case <-time.After(reconnectTime):
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
