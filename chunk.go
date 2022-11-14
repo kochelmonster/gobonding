@@ -1,6 +1,11 @@
 package gobonding
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"fmt"
+
+	"golang.org/x/net/ipv4"
+)
 
 const (
 	MTU = 1300
@@ -32,4 +37,13 @@ size is the received message size inclusive the message order
 func (c *Chunk) Decode(size uint16) {
 	c.Idx = binary.BigEndian.Uint16(c.Data[0:2])
 	c.Size = size - 2
+}
+
+func (c *Chunk) String() string {
+	header, err := ipv4.ParseHeader(c.Buffer())
+	if err != nil {
+		return "Error parsing buffer"
+	} else {
+		return fmt.Sprintf("%v: %v", c.Idx, header)
+	}
 }

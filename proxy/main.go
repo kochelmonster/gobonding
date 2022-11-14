@@ -9,9 +9,12 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/kochelmonster/gobonding"
 	"github.com/lucas-clemente/quic-go"
@@ -39,7 +42,12 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 		},
 	}
 
-	listener, err := quic.ListenAddr(config.ProxyIP, tlsConf, nil)
+	udpAddr, err := net.ResolveUDPAddr("udp", config.ProxyIP)
+	if err != nil {
+		panic(err)
+	}
+	addr := fmt.Sprintf(":%v", udpAddr.Port)
+	listener, err := quic.ListenAddr(addr, tlsConf, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -50,47 +58,78 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 			log.Println("Error Accept", err)
 			return
 		}
+		log.Println("Connection established", conn.RemoteAddr())
 
 		go func() {
 			stream, err := conn.AcceptStream(ctx)
 			if err != nil {
 				return
 			}
+			log.Println("Stream established", conn.RemoteAddr())
+
+			var wg sync.WaitGroup
+			wg.Add(2)
 
 			go func() {
+				defer wg.Done()
 				for {
 					chunk := cm.AllocChunk()
-					size, err := stream.Read(chunk.Buffer())
+					size, err := stream.Read(chunk.Data[0:])
 					if err != nil {
 						cm.FreeChunk(chunk)
+						conn.CloseWithError(1, "stream error")
 						return
 					}
+					if size == 1 {
+						// ping message
+						cm.FreeChunk(chunk)
+						continue
+					}
+					// log.Println("Received buffer", size, chunk.Data[:size])
 					chunk.Decode(uint16(size))
+					log.Println("Receive", chunk)
 					select {
 					case cm.CollectChannel <- chunk:
 					case <-ctx.Done():
-						stream.Close()
+						conn.CloseWithError(2, "close server")
 						return
 					}
 				}
 			}()
 
 			go func() {
+				defer wg.Done()
+				nothing_send := true
 				for {
 					select {
 					case chunk := <-cm.DispatchChannel:
+						nothing_send = false
+						log.Println("Send", chunk, len(chunk.ToSend()))
 						_, err := stream.Write(chunk.ToSend())
 						if err != nil {
 							cm.DispatchChannel <- chunk
-							stream.Close()
+							conn.CloseWithError(1, "stream error")
 							return
 						}
+
+					case <-time.After(20 * time.Second):
+						if nothing_send {
+							_, err := stream.Write([]byte{1})
+							if err != nil {
+								stream.Close()
+								return
+							}
+						}
+						nothing_send = true
+
 					case <-ctx.Done():
-						stream.Close()
+						conn.CloseWithError(2, "close server")
 						return
 					}
 				}
 			}()
+			wg.Wait()
+			log.Println("Close connection", conn.RemoteAddr())
 		}()
 	}
 }

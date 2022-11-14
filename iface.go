@@ -53,6 +53,7 @@ func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager)
 		chunk.Size = uint16(size)
 		chunk.Idx = counter
 		counter++
+		log.Println("Read", chunk)
 
 		select {
 		case cm.DispatchChannel <- chunk:
@@ -67,6 +68,7 @@ func WriteToIface(ctx context.Context, iface *water.Interface, cm *ConnManager) 
 	for {
 		select {
 		case chunk := <-cm.OrderedChannel:
+			log.Println("Write", chunk)
 			_, err := iface.Write(chunk.Buffer()[:chunk.Size])
 			if err != nil {
 				log.Println("Error writing packet", err)
