@@ -69,6 +69,12 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 			return
 		}
 
+		_, err = stream.Write([]byte{1})
+		if err != nil {
+			stream.Close()
+			return
+		}
+
 		var wg sync.WaitGroup
 		wg.Add(2)
 
@@ -77,6 +83,7 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 			for {
 				select {
 				case chunk := <-cm.DispatchChannel:
+					log.Println("Send", chunk)
 					_, err := stream.Write(chunk.ToSend())
 					if err != nil {
 						// send chunk via other ProxyChannels
@@ -98,14 +105,20 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 
 			for {
 				chunk := cm.AllocChunk()
-				size, err := stream.Read(chunk.Buffer())
+				size, err := stream.Read(chunk.Data[0:])
+				log.Println("Prereceive", size, err)
 				if err != nil {
 					cm.FreeChunk(chunk)
 					stream.Close()
 					return
 				}
-
+				if size == 1 {
+					// ping message
+					cm.FreeChunk(chunk)
+					continue
+				}
 				chunk.Decode(uint16(size))
+				log.Println("Receive", chunk)
 				select {
 				case cm.CollectChannel <- chunk:
 				case <-ctx.Done():
@@ -150,7 +163,7 @@ func main() {
 	cm := gobonding.NewConnMananger(ctx, config)
 
 	for i := range config.Channels {
-		createChannel(ctx, i, cm, config)
+		go createChannel(ctx, i, cm, config)
 	}
 
 	go gobonding.WriteToIface(ctx, iface, cm)
