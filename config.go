@@ -12,10 +12,10 @@ type Config struct {
 	ProxyTunName  string
 	OrderWindow   int
 	ProxyIP       string
+	ReconnectTime string
 	Channels      []string
 	PrivateKey    string
 	Certificate   string
-	ReconnectTime string
 }
 
 func LoadConfig(path string) (*Config, error) {
