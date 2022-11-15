@@ -1,6 +1,14 @@
 package gobonding
 
+import "container/heap"
+
 type PriorityQueue []*Chunk
+
+func NewQueue() PriorityQueue {
+	queue := make(PriorityQueue, 0)
+	heap.Init(&queue)
+	return queue
+}
 
 func (pq PriorityQueue) Len() int { return len(pq) }
 
@@ -9,7 +17,10 @@ func (pq PriorityQueue) Less(i, j int) bool {
 		// Overflow case
 		return false
 	}
-
+	if pq[j].Idx < 0x1000 && pq[i].Idx > 0xf000 {
+		// Overflow case
+		return true
+	}
 	return pq[i].Idx < pq[j].Idx
 }
 

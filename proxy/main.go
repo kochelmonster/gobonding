@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -41,11 +40,7 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 		},
 	}
 
-	udpAddr, err := net.ResolveUDPAddr("udp", config.ProxyIP)
-	if err != nil {
-		panic(err)
-	}
-	addr := fmt.Sprintf(":%v", udpAddr.Port)
+	addr := fmt.Sprintf(":%v", config.ProxyPort)
 	listener, err := quic.ListenAddr(addr, tlsConf, nil)
 	if err != nil {
 		panic(err)
@@ -123,7 +118,7 @@ func main() {
 		panic(err)
 	}
 
-	iface := gobonding.IfaceSetup(config.ProxyTunName)
+	iface := gobonding.IfaceSetup(config.TunName)
 
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)

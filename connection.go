@@ -39,15 +39,12 @@ type ConnManager struct {
 }
 
 func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
-	queue := make(PriorityQueue, 0)
-	heap.Init(&queue)
-
 	result := &ConnManager{
 		DispatchChannel: make(chan Message, 10),
 		CollectChannel:  make(chan *Chunk, 10),
 		OrderedChannel:  make(chan *Chunk, 10),
 		ChunkSupply:     make([]*Chunk, 0),
-		Queue:           queue,
+		Queue:           NewQueue(),
 		PeerOrder:       0,
 		LocalOrder:      0,
 		ActiveChannels:  0,
@@ -62,20 +59,31 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 				} else {
 					heap.Push(&result.Queue, chunk)
 					if len(result.Queue) > config.OrderWindow {
-						result.PeerOrder = result.Queue[len(result.Queue)-1].Idx
+						// Should never happen: a missing ip package
+						min := heap.Pop(&result.Queue).(*Chunk)
+						heap.Push(&result.Queue, min)
+						result.PeerOrder = min.Idx
 					}
 				}
-				for len(result.Queue) > 0 && result.Queue[len(result.Queue)-1].Idx <= result.PeerOrder {
+			StopFill:
+				for len(result.Queue) > 0 {
 					chunk = heap.Pop(&result.Queue).(*Chunk)
-					if chunk.Idx == result.PeerOrder {
+					switch {
+					case chunk.Idx == result.PeerOrder:
 						result.OrderedChannel <- chunk
 						result.PeerOrder++
+
+					case chunk.Idx > result.PeerOrder:
+						heap.Push(&result.Queue, chunk)
+						break StopFill
 					}
+					// chunk.Idx < result.PeerOrder: skip
 				}
 
 			case <-ctx.Done():
 				return
 			}
+
 		}
 	}()
 

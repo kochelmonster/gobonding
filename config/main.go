@@ -43,11 +43,10 @@ func main() {
 
 	keyPEM, certPEM := generateTLSConfig()
 	config := gobonding.Config{
-		RouterTunName: "tun0",
-		ProxyTunName:  "tun0",
-		ProxyIP:       "myproxy.net:41414",
+		TunName:       "tun0",
 		ReconnectTime: "20s",
-		Channels:      []string{"wan1", "wan2"},
+		ProxyPort:     41414,
+		Channels:      map[string]string{"wan1": "myproxy.net", "wan2": "myproxy.net"},
 		PrivateKey:    string(keyPEM),
 		Certificate:   string(certPEM),
 		OrderWindow:   128,

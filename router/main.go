@@ -20,8 +20,8 @@ import (
 	"github.com/lucas-clemente/quic-go"
 )
 
-func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManager, config *gobonding.Config) {
-	laddr, err := gobonding.ToIP(config.Channels[channelIdx])
+func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnManager, config *gobonding.Config) {
+	laddr, err := gobonding.ToIP(link)
 	if err != nil {
 		panic(err)
 	}
@@ -54,9 +54,9 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 			MaxIdleTimeout:  30 * time.Second,
 			KeepAlivePeriod: 30 * time.Second}
 
-		raddr, err := net.ResolveUDPAddr("udp", config.ProxyIP)
+		raddr, err := net.ResolveIPAddr("udp", proxy)
 		if err != nil {
-			log.Println("Cannot Resolve address", config.ProxyIP, err)
+			log.Println("Cannot Resolve address", proxy, err)
 			cancel()
 			return
 		}
@@ -66,7 +66,7 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 			panic(err)
 		}
 
-		conn, err := quic.DialContext(ctx, udpConn, raddr, config.ProxyIP, tlsConf, qConf)
+		conn, err := quic.DialContext(ctx, udpConn, raddr, proxy, tlsConf, qConf)
 		if err != nil {
 			cancel()
 			return
@@ -161,15 +161,15 @@ func main() {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
-	iface := gobonding.IfaceSetup(config.RouterTunName)
+	iface := gobonding.IfaceSetup(config.TunName)
 
 	// start routes changes in config monitoring
 	log.Println("Interface parameters configured", iface)
 
 	cm := gobonding.NewConnMananger(ctx, config)
 
-	for i := range config.Channels {
-		go createChannel(ctx, i, cm, config)
+	for link, proxy := range config.Channels {
+		go createChannel(ctx, link, proxy, cm, config)
 	}
 
 	go gobonding.WriteToIface(ctx, iface, cm)

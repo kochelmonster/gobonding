@@ -13,9 +13,9 @@ import (
 const (
 	MTU = 1300
 
-	// BUFFERSIZE is size of buffer to receive packets
+	// BSIZE is size of buffer to receive packets
 	// (little bit bigger than maximum)
-	CHUNK_BUFFERSIZE = 1518
+	BSIZE = 1518
 )
 
 type Message interface {
@@ -92,7 +92,7 @@ func (msg *SyncOrderMsg) String() string {
 
 type Chunk struct {
 	Message
-	Data [CHUNK_BUFFERSIZE]byte
+	Data [BSIZE]byte
 	Idx  uint16
 	Size uint16
 }
