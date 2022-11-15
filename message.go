@@ -26,7 +26,8 @@ type Message interface {
 
 func ReadMessage(stream io.Reader, cm *ConnManager) (Message, error) {
 	buffer := []byte{0, 0}
-	_, err := stream.Read(buffer)
+
+	_, err := io.ReadFull(stream, buffer)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +38,7 @@ func ReadMessage(stream io.Reader, cm *ConnManager) (Message, error) {
 		size = size & 0x7fff
 		switch size {
 		case 0:
-			_, err := stream.Read(buffer)
+			_, err := io.ReadFull(stream, buffer)
 			if err != nil {
 				return nil, err
 			}
@@ -52,14 +53,14 @@ func ReadMessage(stream io.Reader, cm *ConnManager) (Message, error) {
 	chunk := cm.AllocChunk()
 
 	// Read Chunk Order
-	_, err = stream.Read(buffer)
+	_, err = io.ReadFull(stream, buffer)
 	if err != nil {
 		return nil, err
 	}
 	chunk.Idx = binary.BigEndian.Uint16(buffer[:2])
 
 	chunk.Size = size - 2
-	_, err = stream.Read(chunk.Data[0:chunk.Size])
+	_, err = io.ReadFull(stream, chunk.Data[0:chunk.Size])
 	if err != nil {
 		cm.FreeChunk(chunk)
 		return nil, err
