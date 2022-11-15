@@ -7,7 +7,6 @@ import (
 	"context"
 	"io"
 	"log"
-	"time"
 
 	"github.com/songgao/water"
 	"github.com/vishvananda/netlink"
@@ -39,7 +38,6 @@ func IfaceSetup(name string) *water.Interface {
 }
 
 func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager) {
-	var counter uint16 = 0
 	for {
 		chunk := cm.AllocChunk()
 		size, err := iface.Read(chunk.Data[0:])
@@ -52,15 +50,12 @@ func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager)
 		}
 
 		chunk.Size = uint16(size)
-		chunk.Idx = counter
-		counter++
+		chunk.Idx = cm.LocalOrder
+		cm.LocalOrder++
 		log.Println("Read", chunk)
 
 		select {
 		case cm.DispatchChannel <- chunk:
-
-		case <-time.After(30 * time.Second):
-			cm.SyncCounter()
 
 		case <-ctx.Done():
 			cm.FreeChunk(chunk)

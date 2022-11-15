@@ -48,6 +48,10 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 	}
 
 	run := func() {
+		qConf := &quic.Config{
+			MaxIdleTimeout:  30 * time.Second,
+			KeepAlivePeriod: 30 * time.Second}
+
 		raddr, err := net.ResolveUDPAddr("udp", config.ProxyIP)
 		if err != nil {
 			log.Println("Cannot Resolve address", config.ProxyIP, err)
@@ -59,7 +63,7 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 			panic(err)
 		}
 
-		conn, err := quic.DialContext(ctx, udpConn, raddr, config.ProxyIP, tlsConf, nil)
+		conn, err := quic.DialContext(ctx, udpConn, raddr, config.ProxyIP, tlsConf, qConf)
 		if err != nil {
 			return
 		}
@@ -69,15 +73,8 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 			return
 		}
 
-		err = (&gobonding.PingMsg{}).Write(stream)
-		if err != nil {
-			stream.Close()
-			return
-		}
-
 		if cm.ActiveChannels == 0 {
 			cm.SyncCounter()
-			cm.Clear()
 		}
 		cm.ActiveChannels++
 		var wg sync.WaitGroup
@@ -110,6 +107,7 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 
 			for {
 				message, err := gobonding.ReadMessage(stream, cm)
+				log.Println("Receive", message)
 				if err != nil {
 					log.Println("Close read stream", err)
 					stream.Close()
@@ -129,6 +127,7 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 	}
 	for {
 		run()
+		log.Println("Reconnect")
 		select {
 		case <-time.After(reconnectTime):
 		case <-ctx.Done():

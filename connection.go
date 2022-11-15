@@ -32,7 +32,8 @@ type ConnManager struct {
 
 	ChunkSupply []*Chunk
 
-	MsgOrder uint16
+	PeerOrder  uint16
+	LocalOrder uint16
 
 	ActiveChannels int
 }
@@ -47,27 +48,28 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		OrderedChannel:  make(chan *Chunk, 10),
 		ChunkSupply:     make([]*Chunk, 0),
 		Queue:           queue,
-		MsgOrder:        0,
+		PeerOrder:       0,
+		LocalOrder:      0,
 		ActiveChannels:  0,
 	}
 	go func() {
 		for {
 			select {
 			case chunk := <-result.CollectChannel:
-				if chunk.Idx == result.MsgOrder {
+				if chunk.Idx == result.PeerOrder {
 					result.OrderedChannel <- chunk
-					result.MsgOrder++
+					result.PeerOrder++
 				} else {
 					heap.Push(&result.Queue, chunk)
 					if len(result.Queue) > config.OrderWindow {
-						result.MsgOrder = result.Queue[len(result.Queue)-1].Idx
+						result.PeerOrder = result.Queue[len(result.Queue)-1].Idx
 					}
 				}
-				for len(result.Queue) > 0 && result.Queue[len(result.Queue)-1].Idx <= result.MsgOrder {
+				for len(result.Queue) > 0 && result.Queue[len(result.Queue)-1].Idx <= result.PeerOrder {
 					chunk = heap.Pop(&result.Queue).(*Chunk)
-					if chunk.Idx == result.MsgOrder {
+					if chunk.Idx == result.PeerOrder {
 						result.OrderedChannel <- chunk
-						result.MsgOrder++
+						result.PeerOrder++
 					}
 				}
 
@@ -107,8 +109,9 @@ func (cm *ConnManager) FreeChunk(chunk *Chunk) {
 }
 
 func (cm *ConnManager) SyncCounter() {
+	cm.Clear()
 	cm.DispatchChannel <- &SyncOrderMsg{
-		Order: cm.MsgOrder,
+		Order: cm.LocalOrder,
 	}
 }
 

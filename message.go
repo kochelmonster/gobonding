@@ -44,8 +44,6 @@ func ReadMessage(stream io.Reader, cm *ConnManager) (Message, error) {
 			return &SyncOrderMsg{
 				Order: binary.BigEndian.Uint16(buffer),
 			}, nil
-		case 1:
-			return &PingMsg{}, nil
 		}
 		return nil, errors.New("wrong Control message")
 	}
@@ -83,31 +81,13 @@ func (msg *SyncOrderMsg) Write(stream io.Writer) error {
 }
 
 func (msg *SyncOrderMsg) Action(ctx context.Context, cm *ConnManager) error {
-	cm.MsgOrder = msg.Order
+	cm.PeerOrder = msg.Order
+	cm.LocalOrder = 0
 	return nil
 }
 
 func (msg *SyncOrderMsg) String() string {
 	return fmt.Sprintf("SyncMessage: %v", msg.Order)
-}
-
-type PingMsg struct {
-	Message
-}
-
-func (msg *PingMsg) Write(stream io.Writer) error {
-	buffer := []byte{0, 0}
-	binary.BigEndian.PutUint16(buffer[0:2], 0x8001)
-	_, err := stream.Write(buffer)
-	return err
-}
-
-func (msg *PingMsg) Action(ctx context.Context, cm *ConnManager) error {
-	return nil
-}
-
-func (msg *PingMsg) String() string {
-	return "PingMessage"
 }
 
 type Chunk struct {
