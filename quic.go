@@ -18,9 +18,10 @@ func CreateTlsConf(config *Config) *tls.Config {
 		panic(err)
 	}
 	return &tls.Config{
-		NextProtos:   []string{"bonding-proxy"},
-		Certificates: []tls.Certificate{tlsCert},
-		ClientAuth:   tls.RequireAnyClientCert,
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"bonding-proxy"},
+		Certificates:       []tls.Certificate{tlsCert},
+		ClientAuth:         tls.RequireAnyClientCert,
 		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 			for _, c1 := range rawCerts {
 				for _, c2 := range tlsCert.Certificate {
@@ -45,7 +46,7 @@ func HandleStream(conn quic.Connection, stream quic.Stream, cm *ConnManager) {
 		defer wg.Done()
 		for {
 			msg, err := ReadMessage(stream, cm)
-			log.Println("Receive from", conn.RemoteAddr(), msg)
+			// log.Println("Receive from", conn.RemoteAddr(), msg)
 			if err != nil {
 				log.Println("Closing receive stream to", conn.RemoteAddr(), err)
 				conn.CloseWithError(1, "stream error")
@@ -61,7 +62,7 @@ func HandleStream(conn quic.Connection, stream quic.Stream, cm *ConnManager) {
 		for {
 			select {
 			case msg := <-cm.DispatchChannel:
-				log.Println("Send to", conn.RemoteAddr(), msg)
+				// log.Println("Send to", conn.RemoteAddr(), msg)
 				err := msg.Write(stream)
 				if err != nil {
 					cm.DispatchChannel <- msg
