@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"log"
 	"net"
 	"sync"
 )
@@ -58,11 +59,14 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 					result.PeerOrder++
 				} else {
 					heap.Push(&result.Queue, chunk)
+					log.Println("Out of Order", chunk.Idx, result.PeerOrder)
 					if len(result.Queue) > config.OrderWindow {
 						// Should never happen: a missing ip package
 						min := heap.Pop(&result.Queue).(*Chunk)
 						heap.Push(&result.Queue, min)
 						result.PeerOrder = min.Idx
+					} else if len(result.Queue) == 1 {
+						continue
 					}
 				}
 			StopFill:
