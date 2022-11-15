@@ -84,6 +84,9 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 
 func (cm *ConnManager) Clear() {
 	cm.Queue = cm.Queue[:0]
+	for len(cm.DispatchChannel) > 0 {
+		<-cm.DispatchChannel
+	}
 }
 
 func (cm *ConnManager) AllocChunk() *Chunk {

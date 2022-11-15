@@ -48,6 +48,8 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 	}
 
 	run := func() {
+		ctx, cancel := context.WithCancel(ctx)
+
 		qConf := &quic.Config{
 			MaxIdleTimeout:  30 * time.Second,
 			KeepAlivePeriod: 30 * time.Second}
@@ -55,6 +57,7 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 		raddr, err := net.ResolveUDPAddr("udp", config.ProxyIP)
 		if err != nil {
 			log.Println("Cannot Resolve address", config.ProxyIP, err)
+			cancel()
 			return
 		}
 
@@ -65,11 +68,13 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 
 		conn, err := quic.DialContext(ctx, udpConn, raddr, config.ProxyIP, tlsConf, qConf)
 		if err != nil {
+			cancel()
 			return
 		}
 
 		stream, err := conn.OpenStreamSync(ctx)
 		if err != nil {
+			cancel()
 			return
 		}
 
@@ -92,6 +97,7 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 						cm.DispatchChannel <- msg
 						log.Println("Close write stream", err)
 						stream.Close()
+						cancel()
 						return
 					}
 
@@ -111,6 +117,7 @@ func createChannel(ctx context.Context, channelIdx int, cm *gobonding.ConnManage
 				if err != nil {
 					log.Println("Close read stream", err)
 					stream.Close()
+					cancel()
 					return
 				}
 				message.Action(ctx, cm)
