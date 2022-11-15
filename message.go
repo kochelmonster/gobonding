@@ -48,7 +48,7 @@ func ReadMessage(stream io.Reader, cm *ConnManager) (Message, error) {
 		return nil, errors.New("wrong Control message")
 	}
 
-	size = size &^ 0x8000
+	size = size & 0x7fff
 	chunk := cm.AllocChunk()
 
 	// Read Chunk Order
@@ -56,7 +56,7 @@ func ReadMessage(stream io.Reader, cm *ConnManager) (Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	chunk.Idx = binary.BigEndian.Uint16(buffer[0:2])
+	chunk.Idx = binary.BigEndian.Uint16(buffer[:2])
 
 	chunk.Size = size - 2
 	_, err = stream.Read(chunk.Data[0:chunk.Size])

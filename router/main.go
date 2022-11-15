@@ -38,7 +38,7 @@ func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnMa
 			for _, c1 := range rawCerts {
 				for _, c2 := range tlsCert.Certificate {
 					if bytes.Equal(c1, c2) {
-						log.Println("Certificates Equal")
+						log.Println("Certificates Equal", proxy)
 						return nil
 					}
 				}
@@ -54,9 +54,10 @@ func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnMa
 			MaxIdleTimeout:  30 * time.Second,
 			KeepAlivePeriod: 30 * time.Second}
 
-		raddr, err := net.ResolveIPAddr("udp", proxy)
+		serverAddr := fmt.Sprintf("%v:%v", proxy, config.ProxyPort)
+		raddr, err := net.ResolveUDPAddr("udp", serverAddr)
 		if err != nil {
-			log.Println("Cannot Resolve address", proxy, err)
+			log.Println("Cannot Resolve address", serverAddr, err)
 			cancel()
 			return
 		}
@@ -66,8 +67,9 @@ func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnMa
 			panic(err)
 		}
 
-		conn, err := quic.DialContext(ctx, udpConn, raddr, proxy, tlsConf, qConf)
+		conn, err := quic.DialContext(ctx, udpConn, raddr, serverAddr, tlsConf, qConf)
 		if err != nil {
+			log.Println("Error Dialing", serverAddr, err)
 			cancel()
 			return
 		}
@@ -84,25 +86,26 @@ func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnMa
 		cm.ActiveChannels++
 		var wg sync.WaitGroup
 		wg.Add(2)
+		log.Println("Established Connection to", conn.RemoteAddr())
 
 		go func() {
 			defer wg.Done()
 			for {
 				select {
 				case msg := <-cm.DispatchChannel:
-					log.Println("Send", msg)
+					log.Println("Send to", proxy, msg)
 					err := msg.Write(stream)
 					if err != nil {
 						// send chunk via other ProxyChannels
 						cm.DispatchChannel <- msg
-						log.Println("Close write stream", err)
+						log.Println("Closing send stream to", conn.RemoteAddr(), err)
 						stream.Close()
-						cancel()
+						conn.CloseWithError(1, "stream error")
 						return
 					}
 
 				case <-ctx.Done():
-					stream.Close()
+					conn.CloseWithError(1, "stream error")
 					return
 				}
 			}
@@ -113,10 +116,10 @@ func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnMa
 
 			for {
 				message, err := gobonding.ReadMessage(stream, cm)
-				log.Println("Receive", message)
+				log.Println("Receive from", proxy, message)
 				if err != nil {
-					log.Println("Close read stream", err)
-					stream.Close()
+					log.Println("Closing receive stream to", conn.RemoteAddr(), err)
+					conn.CloseWithError(1, "stream error")
 					cancel()
 					return
 				}
