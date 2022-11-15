@@ -67,9 +67,10 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 				defer wg.Done()
 				for {
 					msg, err := gobonding.ReadMessage(stream, cm)
-					log.Println("Receive", msg)
+					log.Println("Receive from", conn.RemoteAddr(), msg)
 					if err != nil {
-						stream.Close()
+						log.Println("Closing receive stream to", conn.RemoteAddr(), err)
+						conn.CloseWithError(1, "stream error")
 						return
 					}
 					msg.Action(ctx, cm)
@@ -81,10 +82,11 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 				for {
 					select {
 					case msg := <-cm.DispatchChannel:
-						log.Println("Send", msg)
+						log.Println("Send to", conn.RemoteAddr(), msg)
 						err := msg.Write(stream)
 						if err != nil {
 							cm.DispatchChannel <- msg
+							log.Println("Closing send stream to", conn.RemoteAddr(), err)
 							conn.CloseWithError(1, "stream error")
 							return
 						}
@@ -94,6 +96,7 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 					}
 				}
 			}()
+
 			cm.ActiveChannels++
 			log.Println("Connection established", conn.RemoteAddr(), cm.ActiveChannels)
 			wg.Wait()
