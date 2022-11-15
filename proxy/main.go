@@ -71,12 +71,13 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 			go func() {
 				defer wg.Done()
 				for {
-					message, err := gobonding.ReadMessage(stream, cm)
+					msg, err := gobonding.ReadMessage(stream, cm)
+					log.Println("Receive", msg)
 					if err != nil {
 						stream.Close()
 						return
 					}
-					message.Action(ctx, cm)
+					msg.Action(ctx, cm)
 				}
 			}()
 
