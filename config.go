@@ -15,7 +15,7 @@ type Config struct {
 	ReconnectTime string
 	// The Port the proxy is listening to
 	ProxyPort int
-	// A map ifacename or ipaddress to proxy name or ip address
+	// A map ifacename to proxy name or ip address
 	Channels map[string]string
 	// Certificate of quic Connection
 	Certificate string

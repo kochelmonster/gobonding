@@ -134,23 +134,19 @@ func (cm *ConnManager) SyncCounter() {
 Parses an ip address or interface name to an ip4 address
 */
 func ToIP(address string) (net.IP, error) {
-	ip := net.ParseIP(address)
-	if ip == nil {
-		link, err := net.InterfaceByName(address)
-		if err != nil {
-			return nil, err
-		}
-
-		addrs, err := link.Addrs()
-		if err != nil {
-			return nil, err
-		}
-		for _, addr := range addrs {
-			if ipv4Addr := addr.(*net.IPNet).IP.To4(); ipv4Addr != nil {
-				return ipv4Addr, nil
-			}
-		}
-		return nil, errors.New("network device has not ip4 address")
+	link, err := net.InterfaceByName(address)
+	if err != nil {
+		return nil, err
 	}
-	return ip, nil
+
+	addrs, err := link.Addrs()
+	if err != nil {
+		return nil, err
+	}
+	for _, addr := range addrs {
+		if ipv4Addr := addr.(*net.IPNet).IP.To4(); ipv4Addr != nil {
+			return ipv4Addr, nil
+		}
+	}
+	return nil, errors.New("network device has not ip4 address")
 }

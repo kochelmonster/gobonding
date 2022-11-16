@@ -13,6 +13,7 @@ import (
 
 	"github.com/kochelmonster/gobonding"
 	"github.com/lucas-clemente/quic-go"
+	"golang.org/x/sys/unix"
 )
 
 func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnManager, config *gobonding.Config) {
@@ -21,27 +22,40 @@ func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnMa
 		panic(err)
 	}
 
-	tlsConf := gobonding.CreateTlsConf(config)
-	run := func() {
-		qConf := &quic.Config{
-			MaxIdleTimeout:  30 * time.Second,
-			KeepAlivePeriod: 30 * time.Second}
+	serverAddr := fmt.Sprintf("%v:%v", proxy, config.ProxyPort)
+	raddr, err := net.ResolveUDPAddr("udp", serverAddr)
+	if err != nil {
+		log.Println("Cannot Resolve address", serverAddr, err)
+		return
+	}
 
-		serverAddr := fmt.Sprintf("%v:%v", proxy, config.ProxyPort)
-		raddr, err := net.ResolveUDPAddr("udp", serverAddr)
-		if err != nil {
-			log.Println("Cannot Resolve address", serverAddr, err)
-			return
-		}
-
-		udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: laddr, Port: 0})
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: laddr, Port: 0})
+	if err != nil {
+		panic(err)
+	}
+	{
+		f, err := udpConn.File()
 		if err != nil {
 			panic(err)
 		}
+		defer f.Close()
+		err = unix.SetsockoptString(int(f.Fd()), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, link)
+		if err != nil {
+			panic(err)
+		}
+	}
 
+	tlsConf := gobonding.CreateTlsConf(config)
+	run := func() {
+		qConf := &quic.Config{
+			HandshakeIdleTimeout: 30 * time.Second,
+			MaxIdleTimeout:       30 * time.Second,
+			KeepAlivePeriod:      30 * time.Second}
+
+		log.Printf("Dialing %v(%v) -> %v\n", laddr, proxy, serverAddr)
 		conn, err := quic.DialContext(ctx, udpConn, raddr, serverAddr, tlsConf, qConf)
 		if err != nil {
-			log.Println("Error Dialing", serverAddr, err)
+			log.Printf("Error Dialing %v(%v) -> %v: %v\n", laddr, proxy, serverAddr, err)
 			return
 		}
 
