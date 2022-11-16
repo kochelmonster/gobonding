@@ -21,7 +21,7 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 	if err != nil {
 		panic(err)
 	}
-
+	log.Println("Quic Server started", addr)
 	for {
 		conn, err := listener.Accept(ctx)
 		if err != nil {

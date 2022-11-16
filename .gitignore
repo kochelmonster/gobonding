@@ -1,2 +1,5 @@
 __debug_bin
+proxy/proxy
+config/config
+router/router
 .vscode/*
