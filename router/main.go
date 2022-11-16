@@ -13,7 +13,6 @@ import (
 
 	"github.com/kochelmonster/gobonding"
 	"github.com/lucas-clemente/quic-go"
-	"golang.org/x/sys/unix"
 )
 
 func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnManager, config *gobonding.Config) {
@@ -33,17 +32,6 @@ func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnMa
 	if err != nil {
 		panic(err)
 	}
-	{
-		f, err := udpConn.File()
-		if err != nil {
-			panic(err)
-		}
-		defer f.Close()
-		err = unix.SetsockoptString(int(f.Fd()), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, link)
-		if err != nil {
-			panic(err)
-		}
-	}
 
 	tlsConf := gobonding.CreateTlsConf(config)
 	run := func() {
@@ -52,10 +40,10 @@ func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnMa
 			MaxIdleTimeout:       30 * time.Second,
 			KeepAlivePeriod:      30 * time.Second}
 
-		log.Printf("Dialing %v(%v) -> %v\n", laddr, proxy, serverAddr)
+		log.Printf("Dialing %v(%v) -> %v\n", laddr, link, serverAddr)
 		conn, err := quic.DialContext(ctx, udpConn, raddr, serverAddr, tlsConf, qConf)
 		if err != nil {
-			log.Printf("Error Dialing %v(%v) -> %v: %v\n", laddr, proxy, serverAddr, err)
+			log.Printf("Error Dialing %v(%v) -> %v: %v\n", laddr, link, serverAddr, err)
 			return
 		}
 
