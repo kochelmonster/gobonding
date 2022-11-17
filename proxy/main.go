@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/kochelmonster/gobonding"
@@ -15,15 +16,25 @@ import (
 
 func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gobonding.Config) {
 	tlsConf := gobonding.CreateTlsConf(config)
+	qConf := gobonding.CreateQuickConfig()
+	channels := make(map[string]quic.Connection)
 
 	addr := fmt.Sprintf(":%v", config.ProxyPort)
-	listener, err := quic.ListenAddr(addr, tlsConf, nil)
+	listener, err := quic.ListenAddr(addr, tlsConf, qConf)
 	if err != nil {
 		panic(err)
 	}
 	log.Println("Quic Server started", addr)
 	for {
 		conn, err := listener.Accept(ctx)
+
+		id := conn.RemoteAddr().String()
+		id = id[:strings.LastIndex(id, ":")]
+		if old, ok := channels[id]; ok {
+			old.CloseWithError(2, "new connection")
+		}
+		channels[id] = conn
+
 		if err != nil {
 			log.Println("Error Accept", err)
 			return

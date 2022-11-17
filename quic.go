@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/lucas-clemente/quic-go"
 )
@@ -36,6 +37,13 @@ func CreateTlsConf(config *Config) *tls.Config {
 	}
 }
 
+func CreateQuickConfig() *quic.Config {
+	return &quic.Config{
+		HandshakeIdleTimeout: 30 * time.Second,
+		MaxIdleTimeout:       10 * time.Second,
+		KeepAlivePeriod:      5 * time.Second}
+}
+
 func HandleStream(conn quic.Connection, stream quic.Stream, cm *ConnManager) {
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -46,7 +54,7 @@ func HandleStream(conn quic.Connection, stream quic.Stream, cm *ConnManager) {
 		defer wg.Done()
 		for {
 			msg, err := ReadMessage(stream, cm)
-			// log.Println("Receive from", conn.RemoteAddr(), msg)
+			// log.Println("Receive from", conn.LocalAddr(), cm.PeerOrder, msg)
 			if err != nil {
 				log.Println("Closing receive stream to", conn.RemoteAddr(), err)
 				conn.CloseWithError(1, "stream error")
@@ -62,7 +70,7 @@ func HandleStream(conn quic.Connection, stream quic.Stream, cm *ConnManager) {
 		for {
 			select {
 			case msg := <-cm.DispatchChannel:
-				// log.Println("Send to", conn.RemoteAddr(), msg)
+				// log.Println("Send to", conn.RemoteAddr(), conn.LocalAddr(), msg)
 				err := msg.Write(stream)
 				if err != nil {
 					cm.DispatchChannel <- msg

@@ -84,6 +84,7 @@ func (msg *SyncOrderMsg) Write(stream io.Writer) error {
 func (msg *SyncOrderMsg) Action(ctx context.Context, cm *ConnManager) error {
 	cm.PeerOrder = msg.Order
 	cm.LocalOrder = 0
+	cm.Clear()
 	return nil
 }
 
