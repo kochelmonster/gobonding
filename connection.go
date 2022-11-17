@@ -124,6 +124,7 @@ func (cm *ConnManager) FreeChunk(chunk *Chunk) {
 }
 
 func (cm *ConnManager) SyncCounter() {
+	cm.LocalOrder = 0
 	cm.Clear()
 	cm.DispatchChannel <- &SyncOrderMsg{
 		Order: cm.LocalOrder,
@@ -134,19 +135,23 @@ func (cm *ConnManager) SyncCounter() {
 Parses an ip address or interface name to an ip4 address
 */
 func ToIP(address string) (net.IP, error) {
-	link, err := net.InterfaceByName(address)
-	if err != nil {
-		return nil, err
-	}
-
-	addrs, err := link.Addrs()
-	if err != nil {
-		return nil, err
-	}
-	for _, addr := range addrs {
-		if ipv4Addr := addr.(*net.IPNet).IP.To4(); ipv4Addr != nil {
-			return ipv4Addr, nil
+	ip := net.ParseIP(address)
+	if ip == nil {
+		link, err := net.InterfaceByName(address)
+		if err != nil {
+			return nil, err
 		}
+
+		addrs, err := link.Addrs()
+		if err != nil {
+			return nil, err
+		}
+		for _, addr := range addrs {
+			if ipv4Addr := addr.(*net.IPNet).IP.To4(); ipv4Addr != nil {
+				return ipv4Addr, nil
+			}
+		}
+		return nil, errors.New("network device has not ip4 address")
 	}
-	return nil, errors.New("network device has not ip4 address")
+	return ip, nil
 }

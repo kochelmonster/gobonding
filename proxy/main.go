@@ -15,9 +15,10 @@ import (
 
 func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gobonding.Config) {
 	tlsConf := gobonding.CreateTlsConf(config)
+	qConf := gobonding.CreateQuickConfig()
 
 	addr := fmt.Sprintf(":%v", config.ProxyPort)
-	listener, err := quic.ListenAddr(addr, tlsConf, nil)
+	listener, err := quic.ListenAddr(addr, tlsConf, qConf)
 	if err != nil {
 		panic(err)
 	}

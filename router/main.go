@@ -34,12 +34,8 @@ func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnMa
 	}
 
 	tlsConf := gobonding.CreateTlsConf(config)
+	qConf := gobonding.CreateQuickConfig()
 	run := func() {
-		qConf := &quic.Config{
-			HandshakeIdleTimeout: 30 * time.Second,
-			MaxIdleTimeout:       30 * time.Second,
-			KeepAlivePeriod:      30 * time.Second}
-
 		log.Printf("Dialing %v(%v) -> %v\n", laddr, link, serverAddr)
 		conn, err := quic.DialContext(ctx, udpConn, raddr, serverAddr, tlsConf, qConf)
 		if err != nil {
