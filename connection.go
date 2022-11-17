@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 const (
@@ -51,6 +52,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		ActiveChannels:  0,
 	}
 	go func() {
+		var windowStart time.Time
 		for {
 			select {
 			case chunk := <-result.CollectChannel:
@@ -59,16 +61,21 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 					result.PeerOrder++
 				} else {
 					heap.Push(&result.Queue, chunk)
-					if len(result.Queue) > config.OrderWindow {
-						log.Println("Window Overflow", chunk.Idx, result.PeerOrder)
+					if len(result.Queue) == 1 {
+						// optimiation pop is not necessary
+						windowStart = time.Now()
+						continue
+					}
+					if !windowStart.IsZero() && time.Since(windowStart) >= 1*time.Second {
+						log.Println("Window Overflow", chunk.Idx, result.PeerOrder,
+							len(result.Queue), time.Since(windowStart))
 						// Should never happen: a missing ip package
 						min := heap.Pop(&result.Queue).(*Chunk)
 						heap.Push(&result.Queue, min)
 						result.PeerOrder = min.Idx
-					} else if len(result.Queue) == 1 {
-						continue
 					}
 				}
+
 			StopFill:
 				for len(result.Queue) > 0 {
 					chunk = heap.Pop(&result.Queue).(*Chunk)
@@ -76,6 +83,9 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 					case chunk.Idx == result.PeerOrder:
 						result.OrderedChannel <- chunk
 						result.PeerOrder++
+						if len(result.Queue) == 0 {
+							windowStart = time.Time{}
+						}
 
 					case chunk.Idx > result.PeerOrder:
 						heap.Push(&result.Queue, chunk)
@@ -125,6 +135,7 @@ func (cm *ConnManager) FreeChunk(chunk *Chunk) {
 
 func (cm *ConnManager) SyncCounter() {
 	cm.LocalOrder = 0
+	cm.PeerOrder = 0
 	cm.Clear()
 	cm.DispatchChannel <- &SyncOrderMsg{
 		Order: cm.LocalOrder,
