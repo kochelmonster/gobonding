@@ -86,8 +86,8 @@ func HandleStream(conn quic.Connection, stream quic.Stream, cm *ConnManager) {
 	}()
 
 	cm.ActiveChannels++
-	log.Println("Connection established", conn.RemoteAddr(), cm.ActiveChannels)
+	log.Printf("Connection established %v -> %v: %v\n", conn.LocalAddr(), conn.RemoteAddr(), cm.ActiveChannels)
 	wg.Wait()
 	cm.ActiveChannels--
-	log.Println("Close connection", conn.RemoteAddr(), cm.ActiveChannels)
+	log.Printf("Close connection %v -> %v: %v\n", conn.LocalAddr(), conn.RemoteAddr(), cm.ActiveChannels)
 }

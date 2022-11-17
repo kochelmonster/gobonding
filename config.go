@@ -6,16 +6,22 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+const (
+	CONFFILE = "gobonding.yml"
+)
+
 type Config struct {
 	// Name of the TUN adapter
 	TunName string
-	// Size of the Buffer to order messages
-	OrderWindow int
+	// If not empty the path to a monitor file
+	MonitorPath string
+	// The Tick interval to update the monitor file
+	MonitorTick string
 	// The delay a channel tries to reconnect to the proxy after a connection close
 	ReconnectTime string
 	// The Port the proxy is listening to
 	ProxyPort int
-	// A map ifacename or ipaddress to proxy name or ip address
+	// A map ifacename or ipaddress of the wan device to ip address of proxy server
 	Channels map[string]string
 	// Certificate of quic Connection
 	Certificate string

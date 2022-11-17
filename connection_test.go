@@ -2,6 +2,7 @@ package gobonding_test
 
 import (
 	"context"
+	"log"
 	"sort"
 	"testing"
 	"time"
@@ -10,9 +11,7 @@ import (
 )
 
 func createConnManager(ctx context.Context) *gobonding.ConnManager {
-	config := gobonding.Config{
-		OrderWindow: 4,
-	}
+	config := gobonding.Config{}
 	return gobonding.NewConnMananger(ctx, &config)
 }
 
@@ -46,6 +45,7 @@ func InAndOut(t *testing.T, cm *gobonding.ConnManager, idxs []uint16) []int {
 	}
 	for i := range idxs {
 		chunk := <-cm.OrderedChannel
+		log.Println("test", chunk)
 		result[i] = int(chunk.Idx)
 	}
 	if !sort.IntsAreSorted(result) {

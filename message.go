@@ -15,7 +15,7 @@ const (
 
 	// BSIZE is size of buffer to receive packets
 	// (little bit bigger than maximum)
-	BSIZE = 1518
+	BUFFERSIZE = 1518
 )
 
 type Message interface {
@@ -94,7 +94,7 @@ func (msg *SyncOrderMsg) String() string {
 
 type Chunk struct {
 	Message
-	Data [BSIZE]byte
+	Data [BUFFERSIZE]byte
 	Idx  uint16
 	Size uint16
 }

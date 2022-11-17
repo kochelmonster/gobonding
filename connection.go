@@ -12,7 +12,7 @@ import (
 
 const (
 	// AppVersion contains current application version for -version command flag
-	AppVersion = "0.1.0a"
+	AppVersion = "0.1.0"
 )
 
 /*
@@ -51,8 +51,32 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		LocalOrder:      0,
 		ActiveChannels:  0,
 	}
+
+	ticker := time.NewTicker(time.Second)
+	ticker.Stop()
+
+	emptyQueue := func() {
+		defer func() {
+			if len(result.Queue) == 0 {
+				ticker.Stop()
+			}
+		}()
+		for len(result.Queue) > 0 {
+			peek := result.Queue[0]
+			switch {
+			case peek.Idx == result.PeerOrder:
+				chunk := heap.Pop(&result.Queue).(*Chunk)
+				result.OrderedChannel <- chunk
+				result.PeerOrder++
+
+			case peek.Idx > result.PeerOrder:
+				return
+			}
+			// peek.Idx < result.PeerOrder: skip
+		}
+	}
+
 	go func() {
-		var windowStart time.Time
 		for {
 			select {
 			case chunk := <-result.CollectChannel:
@@ -62,37 +86,20 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 				} else {
 					heap.Push(&result.Queue, chunk)
 					if len(result.Queue) == 1 {
-						// optimiation pop is not necessary
-						windowStart = time.Now()
+						// optimation emptyQueue is not necessary
+						ticker.Reset(time.Second)
 						continue
 					}
-					if !windowStart.IsZero() && time.Since(windowStart) >= 1*time.Second {
-						log.Println("Window Overflow", chunk.Idx, result.PeerOrder,
-							len(result.Queue), time.Since(windowStart))
-						// Should never happen: a missing ip package
-						min := heap.Pop(&result.Queue).(*Chunk)
-						heap.Push(&result.Queue, min)
-						result.PeerOrder = min.Idx
-					}
 				}
+				emptyQueue()
 
-			StopFill:
-				for len(result.Queue) > 0 {
-					chunk = heap.Pop(&result.Queue).(*Chunk)
-					switch {
-					case chunk.Idx == result.PeerOrder:
-						result.OrderedChannel <- chunk
-						result.PeerOrder++
-						if len(result.Queue) == 0 {
-							windowStart = time.Time{}
-						}
-
-					case chunk.Idx > result.PeerOrder:
-						heap.Push(&result.Queue, chunk)
-						break StopFill
-					}
-					// chunk.Idx < result.PeerOrder: skip
-				}
+			case <-ticker.C:
+				log.Println("Skip Packet", result.PeerOrder, len(result.Queue))
+				// Should never happen: a missing ip package
+				min := heap.Pop(&result.Queue).(*Chunk)
+				heap.Push(&result.Queue, min)
+				result.PeerOrder = min.Idx
+				emptyQueue()
 
 			case <-ctx.Done():
 				return
