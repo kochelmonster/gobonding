@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/kochelmonster/gobonding"
-	"github.com/lucas-clemente/quic-go"
 )
 
 func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnManager, config *gobonding.Config) {
@@ -28,30 +27,19 @@ func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnMa
 		return
 	}
 
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: laddr, Port: 0})
+	udpConn, err := net.DialUDP("udp", &net.UDPAddr{IP: laddr, Port: 0}, raddr)
 	if err != nil {
 		panic(err)
 	}
+	conn := gobonding.NewUDPDialer(udpConn, cm)
 
-	tlsConf := gobonding.CreateTlsConf(config)
-	qConf := gobonding.CreateQuickConfig()
 	run := func() {
 		log.Printf("Dialing %v(%v) -> %v\n", laddr, link, serverAddr)
-		conn, err := quic.DialContext(ctx, udpConn, raddr, serverAddr, tlsConf, qConf)
-		if err != nil {
-			log.Printf("Error Dialing %v(%v) -> %v: %v\n", laddr, link, serverAddr, err)
-			return
-		}
-
-		stream, err := conn.OpenStreamSync(ctx)
-		if err != nil {
-			return
-		}
 
 		if len(cm.ActiveChannels) == 0 {
 			cm.SyncCounter()
 		}
-		gobonding.HandleStream(conn, stream, cm)
+		gobonding.HandleCommunication(ctx, conn, cm)
 	}
 
 	reconnectTime, err := time.ParseDuration(config.ReconnectTime)

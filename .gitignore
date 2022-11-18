@@ -3,3 +3,5 @@ proxy/proxy
 config/config
 router/router
 .vscode/*
+router-setup.sh
+gobonding.yml

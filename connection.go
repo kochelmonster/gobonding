@@ -1,11 +1,9 @@
 package gobonding
 
 import (
-	"container/heap"
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"net"
 	"os"
@@ -38,18 +36,10 @@ type ConnManager struct {
 	// Dispatches chunks on Proxy Channels
 	DispatchChannel chan Message
 
-	// Receives unordered chunk of Proxy Channels
+	// Receives chunk of Proxy Channels
 	CollectChannel chan *Chunk
 
-	// Outputs ordered chunks
-	OrderedChannel chan *Chunk
-
-	Queue PriorityQueue
-
 	ChunkSupply []*Chunk
-
-	PeerOrder  uint16
-	LocalOrder uint16
 
 	ActiveChannels map[string]bool
 
@@ -61,72 +51,11 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 	result := &ConnManager{
 		DispatchChannel: make(chan Message, 10),
 		CollectChannel:  make(chan *Chunk, 10),
-		OrderedChannel:  make(chan *Chunk, 10),
-		Queue:           NewQueue(),
 		ChunkSupply:     make([]*Chunk, 0),
-		PeerOrder:       0,
-		LocalOrder:      0,
 		ActiveChannels:  make(map[string]bool),
 		UploadBytes:     0,
 		DownloadBytes:   0,
 	}
-
-	ticker := time.NewTicker(time.Second)
-	ticker.Stop()
-
-	emptyQueue := func() {
-		defer func() {
-			if len(result.Queue) == 0 {
-				ticker.Stop()
-			}
-		}()
-		for len(result.Queue) > 0 {
-			peek := result.Queue[0]
-			switch {
-			case peek.Idx == result.PeerOrder:
-				chunk := heap.Pop(&result.Queue).(*Chunk)
-				result.OrderedChannel <- chunk
-				result.PeerOrder++
-
-			case peek.Idx > result.PeerOrder:
-				return
-			}
-			// peek.Idx < result.PeerOrder: skip
-		}
-	}
-
-	go func() {
-		// Sorts chunks that came not in order
-		for {
-			select {
-			case chunk := <-result.CollectChannel:
-				if chunk.Idx == result.PeerOrder {
-					result.OrderedChannel <- chunk
-					result.PeerOrder++
-				} else {
-					heap.Push(&result.Queue, chunk)
-					if len(result.Queue) == 1 {
-						// optimation emptyQueue is not necessary
-						ticker.Reset(time.Second)
-						continue
-					}
-				}
-				emptyQueue()
-
-			case <-ticker.C:
-				log.Println("Skip Packet", result.PeerOrder, len(result.Queue))
-				// Should never happen: a missing ip package
-				min := heap.Pop(&result.Queue).(*Chunk)
-				heap.Push(&result.Queue, min)
-				result.PeerOrder = min.Idx
-				emptyQueue()
-
-			case <-ctx.Done():
-				return
-			}
-
-		}
-	}()
 
 	if config.MonitorPath != "" {
 		period, err := time.ParseDuration(config.MonitorTick)
@@ -194,7 +123,6 @@ func (cm *ConnManager) CountDownload(chunk *Chunk) *Chunk {
 }
 
 func (cm *ConnManager) Clear() {
-	cm.Queue = cm.Queue[:0]
 	for len(cm.DispatchChannel) > 0 {
 		<-cm.DispatchChannel
 	}
@@ -211,7 +139,6 @@ func (cm *ConnManager) AllocChunk() *Chunk {
 		}
 	}
 	return &Chunk{
-		Idx:  0,
 		Size: 0,
 	}
 }
@@ -223,12 +150,7 @@ func (cm *ConnManager) FreeChunk(chunk *Chunk) {
 }
 
 func (cm *ConnManager) SyncCounter() {
-	cm.LocalOrder = 0
-	cm.PeerOrder = 0
 	cm.Clear()
-	cm.DispatchChannel <- &SyncOrderMsg{
-		Order: cm.LocalOrder,
-	}
 }
 
 /*
