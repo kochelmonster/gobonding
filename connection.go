@@ -75,23 +75,23 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 	ticker.Stop()
 
 	emptyQueue := func() {
-		defer func() {
-			if len(result.Queue) == 0 {
-				ticker.Stop()
-			}
-		}()
 		for len(result.Queue) > 0 {
 			peek := result.Queue[0]
 			switch {
 			case peek.Idx == result.PeerOrder:
-				chunk := heap.Pop(&result.Queue).(*Chunk)
-				result.OrderedChannel <- chunk
+				result.OrderedChannel <- heap.Pop(&result.Queue).(*Chunk)
 				result.PeerOrder++
 
 			case peek.Idx < result.PeerOrder:
 				heap.Pop(&result.Queue)
+
+			default: // peek.Idx > result.PeerOrder
+				return
 			}
-			// peek.Idx > result.PeerOrder -> keep in queue
+		}
+
+		if len(result.Queue) == 0 {
+			ticker.Stop()
 		}
 	}
 
@@ -110,6 +110,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 						// optimation emptyQueue is not necessary
 						ticker.Reset(time.Second)
 					}
+					// log.Println("Packet in Queue", chunk.Idx, result.PeerOrder, len(result.Queue))
 				}
 
 			case <-ticker.C:
