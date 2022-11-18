@@ -55,7 +55,7 @@ func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager)
 		// log.Println("Read", chunk)
 
 		select {
-		case cm.DispatchChannel <- chunk:
+		case cm.DispatchChannel <- cm.CountUpload(chunk):
 
 		case <-ctx.Done():
 			cm.FreeChunk(chunk)
@@ -69,6 +69,7 @@ func WriteToIface(ctx context.Context, iface *water.Interface, cm *ConnManager) 
 		select {
 		case chunk := <-cm.OrderedChannel:
 			// log.Println("Write", chunk)
+			cm.CountDownload(chunk)
 			_, err := iface.Write(chunk.Data[:chunk.Size])
 			if err != nil {
 				log.Println("Error writing packet", err)

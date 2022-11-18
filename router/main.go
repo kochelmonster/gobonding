@@ -48,7 +48,7 @@ func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnMa
 			return
 		}
 
-		if cm.ActiveChannels == 0 {
+		if len(cm.ActiveChannels) == 0 {
 			cm.SyncCounter()
 		}
 		gobonding.HandleStream(conn, stream, cm)

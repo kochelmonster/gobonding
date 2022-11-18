@@ -105,7 +105,7 @@ func WriteConfigFile(parentDir, proxy string, devs map[string]string) {
 	keyPEM, certPEM := generateTLSConfig()
 	config := gobonding.Config{
 		TunName:       "tun0",
-		MonitorPath:   "/var/lib/gobonding/monitor.xml",
+		MonitorPath:   "/var/lib/gobonding/monitor.yml",
 		MonitorTick:   "5s",
 		ReconnectTime: "20s",
 		ProxyPort:     41414,

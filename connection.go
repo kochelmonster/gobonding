@@ -4,8 +4,12 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"math"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -13,6 +17,16 @@ import (
 const (
 	// AppVersion contains current application version for -version command flag
 	AppVersion = "0.1.0"
+
+	monitorTemplate = `download_speed: %[1]vBPS
+upload_speed: %[2]vBPS
+min_download_speed: %[3]vBPS
+min_upload_speed: %[4]vBPS
+max_download_speed: %[5]vBPS
+max_upload_speed: %[6]vBPS
+active_channels:
+%[7]v
+`
 )
 
 /*
@@ -37,7 +51,10 @@ type ConnManager struct {
 	PeerOrder  uint16
 	LocalOrder uint16
 
-	ActiveChannels int
+	ActiveChannels map[string]bool
+
+	UploadBytes   int
+	DownloadBytes int
 }
 
 func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
@@ -45,11 +62,13 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		DispatchChannel: make(chan Message, 10),
 		CollectChannel:  make(chan *Chunk, 10),
 		OrderedChannel:  make(chan *Chunk, 10),
-		ChunkSupply:     make([]*Chunk, 0),
 		Queue:           NewQueue(),
+		ChunkSupply:     make([]*Chunk, 0),
 		PeerOrder:       0,
 		LocalOrder:      0,
-		ActiveChannels:  0,
+		ActiveChannels:  make(map[string]bool),
+		UploadBytes:     0,
+		DownloadBytes:   0,
 	}
 
 	ticker := time.NewTicker(time.Second)
@@ -77,6 +96,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 	}
 
 	go func() {
+		// Sorts chunks that came not in order
 		for {
 			select {
 			case chunk := <-result.CollectChannel:
@@ -108,7 +128,69 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		}
 	}()
 
+	if config.MonitorPath != "" {
+		period, err := time.ParseDuration(config.MonitorTick)
+		if err != nil {
+			period = 20 * time.Second
+		}
+
+		dirPath := filepath.Dir(config.MonitorPath)
+		err = os.MkdirAll(dirPath, os.ModePerm)
+		if err == nil {
+			go func() {
+				ts := time.Now()
+				maxDSpeed := float64(0)
+				maxUSpeed := float64(0)
+				minDSpeed := math.MaxFloat64
+				minUSpeed := math.MaxFloat64
+
+				// Write Monitor File
+				for {
+					select {
+					case <-time.After(period):
+						duration := time.Since(ts)
+						dSpeed := float64(result.DownloadBytes) / float64(duration)
+						uSpeed := float64(result.UploadBytes) / float64(duration)
+
+						maxDSpeed = math.Max(dSpeed, maxDSpeed)
+						maxUSpeed = math.Max(uSpeed, maxUSpeed)
+
+						minDSpeed = math.Min(dSpeed, minDSpeed)
+						minUSpeed = math.Min(uSpeed, minUSpeed)
+
+						result.DownloadBytes = 0
+						result.UploadBytes = 0
+
+						channels := ""
+						for id := range result.ActiveChannels {
+							channels += "  - " + id
+						}
+
+						text := fmt.Sprintf(monitorTemplate, int(dSpeed), int(uSpeed), int(maxDSpeed),
+							int(maxUSpeed), int(minDSpeed), int(minUSpeed), channels)
+
+						os.WriteFile(config.MonitorPath, []byte(text), 0666)
+
+						// write
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+		}
+	}
+
 	return result
+}
+
+func (cm *ConnManager) CountUpload(chunk *Chunk) *Chunk {
+	cm.UploadBytes += int(chunk.Size)
+	return chunk
+}
+
+func (cm *ConnManager) CountDownload(chunk *Chunk) *Chunk {
+	cm.DownloadBytes += int(chunk.Size)
+	return chunk
 }
 
 func (cm *ConnManager) Clear() {
