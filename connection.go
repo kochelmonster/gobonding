@@ -88,10 +88,10 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 				result.OrderedChannel <- chunk
 				result.PeerOrder++
 
-			case peek.Idx > result.PeerOrder:
-				return
+			case peek.Idx < result.PeerOrder:
+				heap.Pop(&result.Queue)
 			}
-			// peek.Idx < result.PeerOrder: skip
+			// peek.Idx > result.PeerOrder -> keep in queue
 		}
 	}
 
@@ -103,15 +103,14 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 				if chunk.Idx == result.PeerOrder {
 					result.OrderedChannel <- chunk
 					result.PeerOrder++
+					emptyQueue()
 				} else {
 					heap.Push(&result.Queue, chunk)
 					if len(result.Queue) == 1 {
 						// optimation emptyQueue is not necessary
 						ticker.Reset(time.Second)
-						continue
 					}
 				}
-				emptyQueue()
 
 			case <-ticker.C:
 				// Should never happen: a missing ip package
