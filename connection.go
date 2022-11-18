@@ -114,12 +114,13 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 				emptyQueue()
 
 			case <-ticker.C:
-				log.Println("Skip Packet", result.PeerOrder, len(result.Queue))
 				// Should never happen: a missing ip package
-				min := heap.Pop(&result.Queue).(*Chunk)
-				heap.Push(&result.Queue, min)
-				result.PeerOrder = min.Idx
-				emptyQueue()
+				if len(result.Queue) > 0 {
+					min := result.Queue[0]
+					log.Println("Skip Packet", min.Idx, result.PeerOrder, len(result.Queue))
+					result.PeerOrder = min.Idx
+					emptyQueue()
+				}
 
 			case <-ctx.Done():
 				return
@@ -148,9 +149,9 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 				for {
 					select {
 					case <-time.After(period):
-						duration := time.Since(ts)
-						dSpeed := float64(result.DownloadBytes) / float64(duration)
-						uSpeed := float64(result.UploadBytes) / float64(duration)
+						duration := float64(time.Since(ts)) / float64(time.Second)
+						dSpeed := float64(result.DownloadBytes) / duration
+						uSpeed := float64(result.UploadBytes) / duration
 
 						maxDSpeed = math.Max(dSpeed, maxDSpeed)
 						maxUSpeed = math.Max(uSpeed, maxUSpeed)
@@ -160,10 +161,11 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 
 						result.DownloadBytes = 0
 						result.UploadBytes = 0
+						ts = time.Now()
 
 						channels := ""
 						for id := range result.ActiveChannels {
-							channels += "  - " + id
+							channels += "  - " + id + "\n"
 						}
 
 						text := fmt.Sprintf(monitorTemplate, int(dSpeed), int(uSpeed), int(maxDSpeed),
