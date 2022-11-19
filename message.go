@@ -1,9 +1,8 @@
 package gobonding
 
 import (
-	"context"
-	"errors"
 	"fmt"
+	"log"
 	"net"
 
 	"golang.org/x/net/ipv4"
@@ -17,10 +16,18 @@ const (
 	BUFFERSIZE = 1518
 )
 
+type WriteConnection interface {
+	WriteTo(b []byte, addr net.Addr) (int, error)
+}
+
+type ReadConnection interface {
+	ReadFrom(b []byte) (int, net.Addr, error)
+}
+
 type Message interface {
-	Write(conn *net.UDPConn) error
-	Action(ctx context.Context, cm *ConnManager) error
-	Src() net.Addr
+	Write(conn WriteConnection) error
+	Action(cm *ConnManager, conn WriteConnection)
+	RouterAddr() net.Addr
 	String() string
 }
 
@@ -31,23 +38,17 @@ type Chunk struct {
 	Addr net.Addr
 }
 
-func (c *Chunk) Src() net.Addr {
+func (c *Chunk) RouterAddr() net.Addr {
 	return c.Addr
 }
 
-func (c *Chunk) Write(conn *net.UDPConn) error {
-	_, err := conn.Write(c.Data[:c.Size])
+func (c *Chunk) Write(conn WriteConnection) error {
+	_, err := conn.WriteTo(c.Data[:c.Size], c.Addr)
 	return err
 }
 
-func (c *Chunk) Action(ctx context.Context, cm *ConnManager) error {
-	select {
-	case cm.CollectChannel <- c:
-	case <-ctx.Done():
-		cm.FreeChunk(c)
-		return errors.New("cancel writing Chunk")
-	}
-	return nil
+func (c *Chunk) Action(cm *ConnManager, conn WriteConnection) {
+	cm.CollectChannel <- c
 }
 
 func (c *Chunk) String() string {
@@ -57,4 +58,49 @@ func (c *Chunk) String() string {
 	} else {
 		return fmt.Sprintf("Packet %v: %v", c.Size, header)
 	}
+}
+
+type PingMessage struct {
+	Addr net.Addr
+}
+
+func (m *PingMessage) Write(conn WriteConnection) error {
+	buffer := []byte{0, 'p'}
+	_, err := conn.WriteTo(buffer, m.Addr)
+	return err
+}
+
+func (m *PingMessage) Action(cm *ConnManager, conn WriteConnection) {
+	cm.UpdateChannel(m.Addr, conn)
+}
+
+func (m *PingMessage) RouterAddr() net.Addr {
+	return m.Addr
+}
+
+func (m *PingMessage) String() string {
+	return fmt.Sprintf("PingMessage: %v", m.Addr)
+}
+
+func ReadMessage(conn ReadConnection, cm *ConnManager) (Message, error) {
+	chunk := cm.AllocChunk()
+	size, addr, err := conn.ReadFrom(chunk.Data[0:])
+	if err != nil {
+		cm.FreeChunk(chunk)
+		return nil, err
+	}
+	chunk.Size = uint16(size)
+	chunk.Addr = addr
+
+	if chunk.Data[0] == 0 {
+		switch chunk.Data[1] {
+		case 'p':
+			cm.FreeChunk(chunk)
+			return &PingMessage{Addr: addr}, nil
+		}
+		// not an IP Packet -> Control Message
+		log.Println("control message")
+	}
+
+	return chunk, nil
 }

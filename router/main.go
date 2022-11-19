@@ -14,47 +14,63 @@ import (
 	"github.com/kochelmonster/gobonding"
 )
 
-func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnManager, config *gobonding.Config) {
-	laddr, err := gobonding.ToIP(link)
-	if err != nil {
-		panic(err)
+type ConnectionDispatcher struct {
+	conns map[net.Addr]*net.UDPConn
+}
+
+func (c *ConnectionDispatcher) WriteTo(b []byte, addr net.Addr) (int, error) {
+	if conn, ok := c.conns[addr]; ok {
+		return conn.Write(b)
 	}
+	return 0, nil
+}
 
-	serverAddr := fmt.Sprintf("%v:%v", proxy, config.ProxyPort)
-	raddr, err := net.ResolveUDPAddr("udp", serverAddr)
-	if err != nil {
-		log.Println("Cannot Resolve address", serverAddr, err)
-		return
-	}
+type ReadWrapper struct {
+	conn *net.UDPConn
+}
 
-	udpConn, err := net.DialUDP("udp", &net.UDPAddr{IP: laddr, Port: 0}, raddr)
-	if err != nil {
-		panic(err)
-	}
-	conn := gobonding.NewUDPDialer(udpConn, cm)
+func (c *ReadWrapper) ReadFrom(b []byte) (int, net.Addr, error) {
+	size, _, err := c.conn.ReadFrom(b)
+	return size, c.conn.LocalAddr(), err
+}
 
-	run := func() {
-		log.Printf("Dialing %v(%v) -> %v\n", laddr, link, serverAddr)
+func createChannels(ctx context.Context, cm *gobonding.ConnManager, config *gobonding.Config) {
+	conn := ConnectionDispatcher{conns: map[net.Addr]*net.UDPConn{}}
 
-		if len(cm.ActiveChannels) == 0 {
-			cm.SyncCounter()
+	for link, proxy := range config.Channels {
+		laddr, err := gobonding.ToIP(link)
+		if err != nil {
+			panic(err)
 		}
-		gobonding.HandleCommunication(ctx, conn, cm)
-	}
 
-	reconnectTime, err := time.ParseDuration(config.ReconnectTime)
-	if err != nil {
-		reconnectTime = 20 * time.Second
-	}
-	for {
-		run()
-		log.Println("Reconnect")
-		select {
-		case <-time.After(reconnectTime):
-		case <-ctx.Done():
+		serverAddr := fmt.Sprintf("%v:%v", proxy, config.ProxyPort)
+		raddr, err := net.ResolveUDPAddr("udp", serverAddr)
+		if err != nil {
+			log.Println("Cannot Resolve address", serverAddr, err)
 			return
 		}
+
+		udpConn, err := net.DialUDP("udp", &net.UDPAddr{IP: laddr, Port: 0}, raddr)
+		if err != nil {
+			panic(err)
+		}
+		addr := udpConn.LocalAddr()
+		conn.conns[addr] = udpConn
+		cm.AddChannel(addr)
+
+		go func() {
+			wrapper := ReadWrapper{conn: udpConn}
+			for {
+				msg, err := gobonding.ReadMessage(&wrapper, cm)
+				if err != nil {
+					return
+				}
+				msg.Action(cm, &conn)
+			}
+		}()
 	}
+
+	go cm.SendPings(ctx, &conn)
 }
 
 func main() {
@@ -82,10 +98,7 @@ func main() {
 
 	cm := gobonding.NewConnMananger(ctx, config)
 
-	for link, proxy := range config.Channels {
-		go createChannel(ctx, link, proxy, cm, config)
-	}
-
+	createChannels(ctx, cm, config)
 	go gobonding.WriteToIface(ctx, iface, cm)
 	go gobonding.ReadFromIface(ctx, iface, cm)
 
@@ -95,4 +108,6 @@ func main() {
 
 	<-exitChan
 	cancel()
+	time.Sleep(1 * time.Microsecond)
+	cm.Close()
 }

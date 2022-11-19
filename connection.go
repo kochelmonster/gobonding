@@ -41,20 +41,33 @@ type ConnManager struct {
 
 	ChunkSupply []*Chunk
 
-	ActiveChannels map[string]bool
+	ActiveChannels map[net.Addr]*channel
 
 	UploadBytes   int
 	DownloadBytes int
+
+	heartbeat time.Duration
+}
+
+type channel struct {
+	lastPing time.Time
+	signal   chan bool
 }
 
 func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
+	heartbeat, err := time.ParseDuration(config.HeartBeatTime)
+	if err != nil {
+		heartbeat = 2 * time.Second
+	}
+
 	result := &ConnManager{
 		DispatchChannel: make(chan Message, 10),
 		CollectChannel:  make(chan *Chunk, 10),
 		ChunkSupply:     make([]*Chunk, 0),
-		ActiveChannels:  make(map[string]bool),
+		ActiveChannels:  make(map[net.Addr]*channel),
 		UploadBytes:     0,
 		DownloadBytes:   0,
+		heartbeat:       heartbeat,
 	}
 
 	if config.MonitorPath != "" {
@@ -92,7 +105,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 
 						channels := ""
 						for id := range result.ActiveChannels {
-							channels += "  - " + id
+							channels += "  - " + id.String()
 						}
 
 						text := fmt.Sprintf(monitorTemplate, int(dSpeed), int(uSpeed), int(maxDSpeed),
@@ -122,10 +135,11 @@ func (cm *ConnManager) CountDownload(chunk *Chunk) *Chunk {
 	return chunk
 }
 
-func (cm *ConnManager) Clear() {
-	for len(cm.DispatchChannel) > 0 {
-		<-cm.DispatchChannel
+func (cm *ConnManager) Close() {
+	for _, c := range cm.ActiveChannels {
+		close(c.signal)
 	}
+	close(cm.DispatchChannel)
 }
 
 func (cm *ConnManager) AllocChunk() *Chunk {
@@ -149,8 +163,72 @@ func (cm *ConnManager) FreeChunk(chunk *Chunk) {
 	cm.mu.Unlock()
 }
 
-func (cm *ConnManager) SyncCounter() {
-	cm.Clear()
+func (cm *ConnManager) IsActive(c *channel) bool {
+	return time.Since(c.lastPing) < 2*cm.heartbeat
+}
+
+func (cm *ConnManager) AddChannel(addr net.Addr) chan bool {
+	signal := make(chan bool)
+	chl := channel{
+		lastPing: time.Now(),
+		signal:   signal,
+	}
+	cm.ActiveChannels[addr] = &chl
+	return signal
+}
+
+// Updates the lastPing Time or creates a channel if a message comes in
+func (cm *ConnManager) UpdateChannel(addr net.Addr, conn WriteConnection) {
+	if c, ok := cm.ActiveChannels[addr]; ok {
+		c.lastPing = time.Now()
+		go func() { c.signal <- true }()
+	} else {
+		signal := cm.AddChannel(addr)
+
+		go func() {
+			for {
+				if cm.IsActive(c) {
+					select {
+					case msg, more := <-cm.DispatchChannel:
+						if !more {
+							return
+						}
+						if cm.IsActive(c) {
+							msg.Write(conn)
+						} else {
+							cm.DispatchChannel <- msg
+						}
+					case _, more := <-signal:
+						if !more {
+							return
+						}
+					}
+				} else {
+					// wait for next ping
+					_, more := <-signal
+					if !more {
+						return
+					}
+				}
+			}
+		}()
+	}
+}
+
+// Starts tracking connections
+func (cm *ConnManager) SendPings(ctx context.Context, conn WriteConnection) {
+	timer := time.NewTimer(cm.heartbeat)
+	for {
+		select {
+		case <-timer.C:
+			for addr := range cm.ActiveChannels {
+				(&PingMessage{Addr: addr}).Write(conn)
+			}
+
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 /*

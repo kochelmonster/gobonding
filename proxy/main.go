@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/kochelmonster/gobonding"
 )
@@ -18,19 +19,19 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 	if err != nil {
 		panic(err)
 	}
-	listener := gobonding.NewUDPListener(conn, cm)
 	log.Println("UDP Server started", conn.LocalAddr())
 
+	go cm.SendPings(ctx, conn)
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
 	for {
-		conn, err := listener.Accept()
+		msg, err := gobonding.ReadMessage(conn, cm)
 		if err != nil {
-			log.Println("Error Accept", err)
 			return
 		}
-
-		go func() {
-			gobonding.HandleCommunication(ctx, conn, cm)
-		}()
+		msg.Action(cm, conn)
 	}
 }
 
@@ -64,4 +65,6 @@ func main() {
 	signal.Notify(exitChan, syscall.SIGINT)
 	<-exitChan
 	cancel()
+	time.Sleep(1 * time.Microsecond)
+	cm.Close()
 }

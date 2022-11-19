@@ -17,8 +17,9 @@ type Config struct {
 	MonitorPath string
 	// The Tick interval to update the monitor file
 	MonitorTick string
-	// The delay a channel tries to reconnect to the proxy after a connection close
-	ReconnectTime string
+	// Hearbeat period to test udp connection
+	HeartBeatTime string
+
 	// The Port the proxy is listening to
 	ProxyPort int
 	// A map ifacename or ipaddress of the wan device to ip address of proxy server
