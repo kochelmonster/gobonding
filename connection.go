@@ -167,14 +167,14 @@ func (cm *ConnManager) IsActive(c *channel) bool {
 	return time.Since(c.lastPing) < 2*cm.heartbeat
 }
 
-func (cm *ConnManager) AddChannel(addr net.Addr) chan bool {
+func (cm *ConnManager) AddChannel(addr net.Addr) *channel {
 	signal := make(chan bool)
 	chl := channel{
 		lastPing: time.Now(),
 		signal:   signal,
 	}
 	cm.ActiveChannels[addr] = &chl
-	return signal
+	return &chl
 }
 
 // Updates the lastPing Time or creates a channel if a message comes in
@@ -183,7 +183,7 @@ func (cm *ConnManager) UpdateChannel(addr net.Addr, conn WriteConnection) {
 		c.lastPing = time.Now()
 		go func() { c.signal <- true }()
 	} else {
-		signal := cm.AddChannel(addr)
+		c := cm.AddChannel(addr)
 
 		go func() {
 			for {
@@ -198,14 +198,14 @@ func (cm *ConnManager) UpdateChannel(addr net.Addr, conn WriteConnection) {
 						} else {
 							cm.DispatchChannel <- msg
 						}
-					case _, more := <-signal:
+					case _, more := <-c.signal:
 						if !more {
 							return
 						}
 					}
 				} else {
 					// wait for next ping
-					_, more := <-signal
+					_, more := <-c.signal
 					if !more {
 						return
 					}
