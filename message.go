@@ -28,6 +28,7 @@ type Message interface {
 	Write(conn WriteConnection) error
 	Action(cm *ConnManager, conn WriteConnection)
 	RouterAddr() net.Addr
+	SetRouterAddr(addr net.Addr)
 	String() string
 }
 
@@ -38,11 +39,16 @@ type Chunk struct {
 	Addr net.Addr
 }
 
+func (c *Chunk) SetRouterAddr(addr net.Addr) {
+	c.Addr = addr
+}
+
 func (c *Chunk) RouterAddr() net.Addr {
 	return c.Addr
 }
 
 func (c *Chunk) Write(conn WriteConnection) error {
+	// log.Println("Send", c.Addr)
 	_, err := conn.WriteTo(c.Data[:c.Size], c.Addr)
 	return err
 }
@@ -72,6 +78,10 @@ func (m *PingMessage) Write(conn WriteConnection) error {
 
 func (m *PingMessage) Action(cm *ConnManager, conn WriteConnection) {
 	cm.UpdateChannel(m.Addr, conn)
+}
+
+func (m *PingMessage) SetRouterAddr(addr net.Addr) {
+	m.Addr = addr
 }
 
 func (m *PingMessage) RouterAddr() net.Addr {

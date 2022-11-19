@@ -15,11 +15,11 @@ import (
 )
 
 type ConnectionDispatcher struct {
-	conns map[net.Addr]*net.UDPConn
+	conns map[string]*net.UDPConn
 }
 
 func (c *ConnectionDispatcher) WriteTo(b []byte, addr net.Addr) (int, error) {
-	if conn, ok := c.conns[addr]; ok {
+	if conn, ok := c.conns[addr.String()]; ok {
 		return conn.Write(b)
 	}
 	return 0, nil
@@ -35,7 +35,7 @@ func (c *ReadWrapper) ReadFrom(b []byte) (int, net.Addr, error) {
 }
 
 func createChannels(ctx context.Context, cm *gobonding.ConnManager, config *gobonding.Config) {
-	conn := ConnectionDispatcher{conns: map[net.Addr]*net.UDPConn{}}
+	conn := ConnectionDispatcher{conns: map[string]*net.UDPConn{}}
 
 	for link, proxy := range config.Channels {
 		laddr, err := gobonding.ToIP(link)
@@ -55,8 +55,8 @@ func createChannels(ctx context.Context, cm *gobonding.ConnManager, config *gobo
 			panic(err)
 		}
 		addr := udpConn.LocalAddr()
-		conn.conns[addr] = udpConn
-		cm.AddChannel(addr)
+		conn.conns[addr.String()] = udpConn
+		cm.AddChannel(addr, &conn)
 
 		go func() {
 			wrapper := ReadWrapper{conn: udpConn}
@@ -65,6 +65,7 @@ func createChannels(ctx context.Context, cm *gobonding.ConnManager, config *gobo
 				if err != nil {
 					return
 				}
+				// log.Println("Receive", msg.RouterAddr(), msg)
 				msg.Action(cm, &conn)
 			}
 		}()

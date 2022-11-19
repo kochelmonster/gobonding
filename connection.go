@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"net"
 	"os"
@@ -18,12 +19,10 @@ const (
 
 	monitorTemplate = `download_speed: %[1]vBPS
 upload_speed: %[2]vBPS
-min_download_speed: %[3]vBPS
-min_upload_speed: %[4]vBPS
-max_download_speed: %[5]vBPS
-max_upload_speed: %[6]vBPS
+max_download_speed: %[3]vBPS
+max_upload_speed: %[4]vBPS
 active_channels:
-%[7]v
+%[5]v
 `
 )
 
@@ -41,7 +40,7 @@ type ConnManager struct {
 
 	ChunkSupply []*Chunk
 
-	ActiveChannels map[net.Addr]*channel
+	ActiveChannels map[string]*channel
 
 	UploadBytes   int
 	DownloadBytes int
@@ -52,6 +51,7 @@ type ConnManager struct {
 type channel struct {
 	lastPing time.Time
 	signal   chan bool
+	addr     net.Addr
 }
 
 func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
@@ -64,7 +64,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		DispatchChannel: make(chan Message, 10),
 		CollectChannel:  make(chan *Chunk, 10),
 		ChunkSupply:     make([]*Chunk, 0),
-		ActiveChannels:  make(map[net.Addr]*channel),
+		ActiveChannels:  make(map[string]*channel),
 		UploadBytes:     0,
 		DownloadBytes:   0,
 		heartbeat:       heartbeat,
@@ -83,33 +83,29 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 				ts := time.Now()
 				maxDSpeed := float64(0)
 				maxUSpeed := float64(0)
-				minDSpeed := math.MaxFloat64
-				minUSpeed := math.MaxFloat64
 
 				// Write Monitor File
 				for {
 					select {
 					case <-time.After(period):
-						duration := time.Since(ts)
-						dSpeed := float64(result.DownloadBytes) / float64(duration)
-						uSpeed := float64(result.UploadBytes) / float64(duration)
+						duration := float64(time.Since(ts) / time.Second)
+						dSpeed := float64(result.DownloadBytes) / duration
+						uSpeed := float64(result.UploadBytes) / duration
 
 						maxDSpeed = math.Max(dSpeed, maxDSpeed)
 						maxUSpeed = math.Max(uSpeed, maxUSpeed)
 
-						minDSpeed = math.Min(dSpeed, minDSpeed)
-						minUSpeed = math.Min(uSpeed, minUSpeed)
-
 						result.DownloadBytes = 0
 						result.UploadBytes = 0
+						ts = time.Now()
 
 						channels := ""
 						for id := range result.ActiveChannels {
-							channels += "  - " + id.String()
+							channels += "  - " + id + "\n"
 						}
 
 						text := fmt.Sprintf(monitorTemplate, int(dSpeed), int(uSpeed), int(maxDSpeed),
-							int(maxUSpeed), int(minDSpeed), int(minUSpeed), channels)
+							int(maxUSpeed), channels)
 
 						os.WriteFile(config.MonitorPath, []byte(text), 0666)
 
@@ -167,62 +163,93 @@ func (cm *ConnManager) IsActive(c *channel) bool {
 	return time.Since(c.lastPing) < 2*cm.heartbeat
 }
 
-func (cm *ConnManager) AddChannel(addr net.Addr) *channel {
+func (cm *ConnManager) AddChannel(addr net.Addr, conn WriteConnection) {
 	signal := make(chan bool)
-	chl := channel{
+	chl := &channel{
 		lastPing: time.Now(),
 		signal:   signal,
+		addr:     addr,
 	}
-	cm.ActiveChannels[addr] = &chl
-	return &chl
-}
+	key := addr.(*net.UDPAddr).IP.String()
+	{
+		cm.mu.Lock()
+		defer cm.mu.Unlock()
+		cm.ActiveChannels[key] = chl
+	}
+	log.Println("AddChannel", key)
 
-// Updates the lastPing Time or creates a channel if a message comes in
-func (cm *ConnManager) UpdateChannel(addr net.Addr, conn WriteConnection) {
-	if c, ok := cm.ActiveChannels[addr]; ok {
-		c.lastPing = time.Now()
-		go func() { c.signal <- true }()
-	} else {
-		c := cm.AddChannel(addr)
-
-		go func() {
-			for {
-				if cm.IsActive(c) {
-					select {
-					case msg, more := <-cm.DispatchChannel:
-						if !more {
-							return
-						}
-						if cm.IsActive(c) {
-							msg.Write(conn)
-						} else {
-							cm.DispatchChannel <- msg
-						}
-					case _, more := <-c.signal:
-						if !more {
-							return
-						}
+	go func() {
+		for {
+			if cm.IsActive(chl) {
+				select {
+				case msg, more := <-cm.DispatchChannel:
+					if !more {
+						return
 					}
-				} else {
-					// wait for next ping
-					_, more := <-c.signal
+					if cm.IsActive(chl) {
+						msg.SetRouterAddr(addr)
+						// log.Println("send", addr, msg)
+						msg.Write(conn)
+					} else {
+						cm.DispatchChannel <- msg
+					}
+				case _, more := <-signal:
 					if !more {
 						return
 					}
 				}
+			} else {
+				// wait for next ping
+				_, more := <-signal
+				if !more {
+					return
+				}
 			}
-		}()
+		}
+	}()
+}
+
+// Updates the lastPing Time or creates a channel if a message comes in
+func (cm *ConnManager) UpdateChannel(addr net.Addr, conn WriteConnection) {
+	key := addr.(*net.UDPAddr).IP.String()
+	if c, ok := cm.ActiveChannels[key]; ok {
+		delay := time.Since(c.lastPing)
+		if delay > 2*cm.heartbeat {
+			log.Println("Channel Reconnected", key, delay)
+		}
+		c.lastPing = time.Now()
+		c.addr = addr
+		go func() { c.signal <- true }()
+	} else {
+		cm.AddChannel(addr, conn)
 	}
 }
 
 // Starts tracking connections
 func (cm *ConnManager) SendPings(ctx context.Context, conn WriteConnection) {
-	timer := time.NewTimer(cm.heartbeat)
+	timer := time.NewTicker(cm.heartbeat)
 	for {
 		select {
 		case <-timer.C:
-			for addr := range cm.ActiveChannels {
-				(&PingMessage{Addr: addr}).Write(conn)
+			for _, chl := range cm.ActiveChannels {
+				(&PingMessage{Addr: chl.addr}).Write(conn)
+			}
+
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (cm *ConnManager) PurgeChannels(ctx context.Context) {
+	timer := time.NewTicker(20 * time.Minute)
+	for {
+		select {
+		case <-timer.C:
+			for key, chl := range cm.ActiveChannels {
+				if time.Since(chl.lastPing) > 10*time.Minute {
+					delete(cm.ActiveChannels, key)
+				}
 			}
 
 		case <-ctx.Done():
