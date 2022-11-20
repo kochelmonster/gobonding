@@ -21,7 +21,6 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 	}
 	log.Println("UDP Server started", conn.LocalAddr())
 
-	go cm.SendPings(ctx, conn)
 	go func() {
 		<-ctx.Done()
 		conn.Close()
@@ -31,6 +30,7 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 		if err != nil {
 			return
 		}
+		log.Println("Received", msg)
 		msg.Action(cm, conn)
 	}
 }

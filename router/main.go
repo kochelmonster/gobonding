@@ -59,19 +59,25 @@ func createChannels(ctx context.Context, cm *gobonding.ConnManager, config *gobo
 		cm.AddChannel(addr, &conn)
 
 		go func() {
+			log.Println("Initial ack")
+			if !cm.WaitForAck(addr, &conn) {
+				return
+			}
+		}()
+
+		go func() {
 			wrapper := ReadWrapper{conn: udpConn}
 			for {
 				msg, err := gobonding.ReadMessage(&wrapper, cm)
 				if err != nil {
 					return
 				}
-				// log.Println("Receive", msg.RouterAddr(), msg)
+				// log.Println("Received", addr, msg)
 				msg.Action(cm, &conn)
 			}
 		}()
 	}
-
-	go cm.SendPings(ctx, &conn)
+	// go cm.SendPings(ctx, &conn)
 }
 
 func main() {

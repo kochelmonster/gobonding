@@ -33,7 +33,7 @@ type ConnManager struct {
 	mu sync.Mutex
 
 	// Dispatches chunks on Proxy Channels
-	DispatchChannel chan Message
+	DispatchChannel chan *Chunk
 
 	// Receives chunk of Proxy Channels
 	CollectChannel chan *Chunk
@@ -49,9 +49,11 @@ type ConnManager struct {
 }
 
 type channel struct {
-	lastPing time.Time
-	signal   chan bool
-	addr     net.Addr
+	lastPing     time.Time
+	signal       chan bool
+	addr         net.Addr
+	sendCount    int
+	receiveCount int
 }
 
 func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
@@ -61,7 +63,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 	}
 
 	result := &ConnManager{
-		DispatchChannel: make(chan Message, 10),
+		DispatchChannel: make(chan *Chunk, 10),
 		CollectChannel:  make(chan *Chunk, 10),
 		ChunkSupply:     make([]*Chunk, 0),
 		ActiveChannels:  make(map[string]*channel),
@@ -100,8 +102,11 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 						ts = time.Now()
 
 						channels := ""
-						for id := range result.ActiveChannels {
-							channels += "  - " + id + "\n"
+						for id, chl := range result.ActiveChannels {
+							if result.IsActive(chl) {
+								channels += fmt.Sprintf("  - %v(%v/%v)\n",
+									id, chl.sendCount, chl.receiveCount)
+							}
 						}
 
 						text := fmt.Sprintf(monitorTemplate, int(dSpeed), int(uSpeed), int(maxDSpeed),
@@ -121,21 +126,27 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 	return result
 }
 
-func (cm *ConnManager) CountUpload(chunk *Chunk) *Chunk {
-	cm.UploadBytes += int(chunk.Size)
-	return chunk
-}
-
-func (cm *ConnManager) CountDownload(chunk *Chunk) *Chunk {
-	cm.DownloadBytes += int(chunk.Size)
-	return chunk
-}
-
 func (cm *ConnManager) Close() {
 	for _, c := range cm.ActiveChannels {
 		close(c.signal)
 	}
 	close(cm.DispatchChannel)
+}
+
+// Starts tracking connections
+func (cm *ConnManager) SendPings(ctx context.Context, conn WriteConnection) {
+	timer := time.NewTicker(cm.heartbeat)
+	for {
+		select {
+		case <-timer.C:
+			for _, chl := range cm.ActiveChannels {
+				(&PingMessage{MsgBase{chl.addr}}).Write(conn)
+			}
+
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func (cm *ConnManager) AllocChunk() *Chunk {
@@ -164,11 +175,13 @@ func (cm *ConnManager) IsActive(c *channel) bool {
 }
 
 func (cm *ConnManager) AddChannel(addr net.Addr, conn WriteConnection) {
-	signal := make(chan bool)
+	signal := make(chan bool, 1)
 	chl := &channel{
-		lastPing: time.Now(),
-		signal:   signal,
-		addr:     addr,
+		lastPing:     time.Now(),
+		signal:       signal,
+		addr:         addr,
+		sendCount:    0,
+		receiveCount: 0,
 	}
 	key := addr.(*net.UDPAddr).IP.String()
 	{
@@ -179,38 +192,68 @@ func (cm *ConnManager) AddChannel(addr net.Addr, conn WriteConnection) {
 	log.Println("AddChannel", key)
 
 	go func() {
+		sendCount := 0
 		for {
 			if cm.IsActive(chl) {
+				timer := time.NewTimer(cm.heartbeat)
 				select {
-				case msg, more := <-cm.DispatchChannel:
+				case chunk, more := <-cm.DispatchChannel:
 					if !more {
 						return
 					}
-					if cm.IsActive(chl) {
-						msg.SetRouterAddr(addr)
-						// log.Println("send", addr, msg)
-						msg.Write(conn)
-					} else {
-						cm.DispatchChannel <- msg
+
+					if sendCount >= 10 {
+						if !cm.waitForAck(chl, conn, "msg") {
+							return
+						}
+						sendCount = 0
 					}
-				case _, more := <-signal:
-					if !more {
-						return
-					}
+
+					chunk.SetRouterAddr(addr)
+					log.Println("Send", addr, sendCount, chunk)
+					chunk.Write(conn)
+					cm.UploadBytes += int(chunk.Size)
+
+					chl.sendCount++
+					sendCount++
+				case <-timer.C:
+					cm.waitForAck(chl, conn, "timeout")
 				}
-			} else {
-				// wait for next ping
-				_, more := <-signal
-				if !more {
-					return
-				}
+			} else if !cm.waitForAck(chl, conn, "inactive") {
+				return
 			}
 		}
 	}()
 }
 
-// Updates the lastPing Time or creates a channel if a message comes in
-func (cm *ConnManager) UpdateChannel(addr net.Addr, conn WriteConnection) {
+func (cm *ConnManager) RequestAck(addr net.Addr, conn WriteConnection) {
+	(&RequestAckMsg{MsgBase{Addr: addr}}).Write(conn)
+}
+
+func (cm *ConnManager) WaitForAck(addr net.Addr, conn WriteConnection) bool {
+	key := addr.(*net.UDPAddr).IP.String()
+	if c, ok := cm.ActiveChannels[key]; ok {
+		return cm.waitForAck(c, conn, "start")
+	}
+	return false
+}
+
+func (cm *ConnManager) waitForAck(c *channel, conn WriteConnection, cause string) bool {
+	log.Println("Wait For Ack", c.addr, cause)
+	cm.RequestAck(c.addr, conn)
+
+	ticker := time.NewTicker(2 * cm.heartbeat)
+	for {
+		select {
+		case _, more := <-c.signal:
+			return more
+		case <-ticker.C:
+			cm.RequestAck(c.addr, conn)
+		}
+	}
+}
+
+func (cm *ConnManager) GotAck(addr net.Addr) {
 	key := addr.(*net.UDPAddr).IP.String()
 	if c, ok := cm.ActiveChannels[key]; ok {
 		delay := time.Since(c.lastPing)
@@ -218,27 +261,31 @@ func (cm *ConnManager) UpdateChannel(addr net.Addr, conn WriteConnection) {
 			log.Println("Channel Reconnected", key, delay)
 		}
 		c.lastPing = time.Now()
-		c.addr = addr
-		go func() { c.signal <- true }()
-	} else {
-		cm.AddChannel(addr, conn)
+		if len(c.signal) == 0 {
+			// log.Println("GotAck", addr)
+			c.signal <- true
+		}
 	}
 }
 
-// Starts tracking connections
-func (cm *ConnManager) SendPings(ctx context.Context, conn WriteConnection) {
-	timer := time.NewTicker(cm.heartbeat)
-	for {
-		select {
-		case <-timer.C:
-			for _, chl := range cm.ActiveChannels {
-				(&PingMessage{Addr: chl.addr}).Write(conn)
-			}
-
-		case <-ctx.Done():
-			return
-		}
+func (cm *ConnManager) ReceivedChunk(addr net.Addr, chunk *Chunk) {
+	key := addr.(*net.UDPAddr).IP.String()
+	if c, ok := cm.ActiveChannels[key]; ok {
+		c.receiveCount++
 	}
+	cm.DownloadBytes += int(chunk.Size)
+}
+
+func (cm *ConnManager) SendAck(addr net.Addr, conn WriteConnection) {
+	// log.Println("SendAck", addr)
+	key := addr.(*net.UDPAddr).IP.String()
+	if c, ok := cm.ActiveChannels[key]; ok {
+		c.addr = addr
+	} else {
+		cm.AddChannel(addr, conn)
+	}
+
+	(&AckMessage{MsgBase{Addr: addr}}).Write(conn)
 }
 
 func (cm *ConnManager) PurgeChannels(ctx context.Context) {
