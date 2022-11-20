@@ -67,7 +67,7 @@ func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager)
 func WriteToIface(ctx context.Context, iface *water.Interface, cm *ConnManager) {
 	for {
 		select {
-		case chunk := <-cm.OrderedChannel:
+		case chunk := <-cm.CollectChannel:
 			// log.Println("Write", chunk)
 			cm.CountDownload(chunk)
 			_, err := iface.Write(chunk.Data[:chunk.Size])

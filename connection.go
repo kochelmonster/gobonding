@@ -1,11 +1,9 @@
 package gobonding
 
 import (
-	"container/heap"
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"net"
 	"os"
@@ -20,12 +18,10 @@ const (
 
 	monitorTemplate = `download_speed: %[1]vBPS
 upload_speed: %[2]vBPS
-min_download_speed: %[3]vBPS
-min_upload_speed: %[4]vBPS
-max_download_speed: %[5]vBPS
-max_upload_speed: %[6]vBPS
+max_download_speed: %[3]vBPS
+max_upload_speed: %[4]vBPS
 active_channels:
-%[7]v
+%[5]v
 `
 )
 
@@ -35,16 +31,11 @@ Dispatches Chunks to Channels
 type ConnManager struct {
 	mu sync.Mutex
 
-	// Dispatches chunks on Proxy Channels
+	// Dispatches chunks to channels
 	DispatchChannel chan Message
 
-	// Receives unordered chunk of Proxy Channels
+	// Receives chunk from Channels
 	CollectChannel chan *Chunk
-
-	// Outputs ordered chunks
-	OrderedChannel chan *Chunk
-
-	Queue PriorityQueue
 
 	ChunkSupply []*Chunk
 
@@ -61,8 +52,6 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 	result := &ConnManager{
 		DispatchChannel: make(chan Message, 10),
 		CollectChannel:  make(chan *Chunk, 10),
-		OrderedChannel:  make(chan *Chunk, 10),
-		Queue:           NewQueue(),
 		ChunkSupply:     make([]*Chunk, 0),
 		PeerOrder:       0,
 		LocalOrder:      0,
@@ -70,64 +59,6 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		UploadBytes:     0,
 		DownloadBytes:   0,
 	}
-
-	ticker := time.NewTicker(time.Second)
-	ticker.Stop()
-
-	emptyQueue := func() {
-		for len(result.Queue) > 0 {
-			peek := result.Queue[0]
-			switch {
-			case peek.Idx == result.PeerOrder:
-				result.OrderedChannel <- heap.Pop(&result.Queue).(*Chunk)
-				result.PeerOrder++
-
-			case peek.Idx < result.PeerOrder:
-				heap.Pop(&result.Queue)
-
-			default: // peek.Idx > result.PeerOrder
-				return
-			}
-		}
-
-		if len(result.Queue) == 0 {
-			ticker.Stop()
-		}
-	}
-
-	go func() {
-		// Sorts chunks that came not in order
-		for {
-			select {
-			case chunk := <-result.CollectChannel:
-				if chunk.Idx == result.PeerOrder {
-					result.OrderedChannel <- chunk
-					result.PeerOrder++
-					emptyQueue()
-				} else {
-					heap.Push(&result.Queue, chunk)
-					if len(result.Queue) == 1 {
-						// optimation emptyQueue is not necessary
-						ticker.Reset(time.Second)
-					}
-					// log.Println("Packet in Queue", chunk.Idx, result.PeerOrder, len(result.Queue))
-				}
-
-			case <-ticker.C:
-				// Should never happen: a missing ip package
-				if len(result.Queue) > 0 {
-					min := result.Queue[0]
-					log.Println("Skip Packet", min.Idx, result.PeerOrder, len(result.Queue))
-					result.PeerOrder = min.Idx
-					emptyQueue()
-				}
-
-			case <-ctx.Done():
-				return
-			}
-
-		}
-	}()
 
 	if config.MonitorPath != "" {
 		period, err := time.ParseDuration(config.MonitorTick)
@@ -142,8 +73,6 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 				ts := time.Now()
 				maxDSpeed := float64(0)
 				maxUSpeed := float64(0)
-				minDSpeed := math.MaxFloat64
-				minUSpeed := math.MaxFloat64
 
 				// Write Monitor File
 				for {
@@ -156,9 +85,6 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 						maxDSpeed = math.Max(dSpeed, maxDSpeed)
 						maxUSpeed = math.Max(uSpeed, maxUSpeed)
 
-						minDSpeed = math.Min(dSpeed, minDSpeed)
-						minUSpeed = math.Min(uSpeed, minUSpeed)
-
 						result.DownloadBytes = 0
 						result.UploadBytes = 0
 						ts = time.Now()
@@ -169,7 +95,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 						}
 
 						text := fmt.Sprintf(monitorTemplate, int(dSpeed), int(uSpeed), int(maxDSpeed),
-							int(maxUSpeed), int(minDSpeed), int(minUSpeed), channels)
+							int(maxUSpeed), channels)
 
 						os.WriteFile(config.MonitorPath, []byte(text), 0666)
 
@@ -195,13 +121,6 @@ func (cm *ConnManager) CountDownload(chunk *Chunk) *Chunk {
 	return chunk
 }
 
-func (cm *ConnManager) Clear() {
-	cm.Queue = cm.Queue[:0]
-	for len(cm.DispatchChannel) > 0 {
-		<-cm.DispatchChannel
-	}
-}
-
 func (cm *ConnManager) AllocChunk() *Chunk {
 	if len(cm.ChunkSupply) > 0 {
 		cm.mu.Lock()
@@ -222,15 +141,6 @@ func (cm *ConnManager) FreeChunk(chunk *Chunk) {
 	cm.mu.Lock()
 	cm.ChunkSupply = append(cm.ChunkSupply, chunk)
 	cm.mu.Unlock()
-}
-
-func (cm *ConnManager) SyncCounter() {
-	cm.LocalOrder = 0
-	cm.PeerOrder = 0
-	cm.Clear()
-	cm.DispatchChannel <- &SyncOrderMsg{
-		Order: cm.LocalOrder,
-	}
 }
 
 /*
