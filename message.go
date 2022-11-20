@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 
 	"golang.org/x/net/ipv4"
 )
@@ -74,12 +75,18 @@ func (c *Chunk) Write(stream io.Writer) error {
 
 	binary.BigEndian.PutUint16(buffer[0:2], c.Size+2)
 	binary.BigEndian.PutUint16(buffer[2:4], c.Idx)
-	_, err := stream.Write(buffer)
+	s, err := stream.Write(buffer)
 	if err != nil {
 		return err
 	}
+	if s == 0 {
+		log.Println("size 0")
+	}
 
-	_, err = stream.Write(c.Data[:c.Size])
+	s, err = stream.Write(c.Data[:c.Size])
+	if s == 0 {
+		log.Println("size 0")
+	}
 	return err
 }
 
