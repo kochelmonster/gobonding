@@ -37,6 +37,7 @@ func (c *ReadWrapper) ReadFrom(b []byte) (int, net.Addr, error) {
 func createChannels(ctx context.Context, cm *gobonding.ConnManager, config *gobonding.Config) {
 	conn := ConnectionDispatcher{conns: map[string]*net.UDPConn{}}
 
+	i := uint16(0)
 	for link, proxy := range config.Channels {
 		laddr, err := gobonding.ToIP(link)
 		if err != nil {
@@ -56,13 +57,13 @@ func createChannels(ctx context.Context, cm *gobonding.ConnManager, config *gobo
 		}
 		addr := udpConn.LocalAddr()
 		conn.conns[addr.String()] = udpConn
-		cm.AddChannel(addr, &conn)
+		cm.AddChannel(i, addr, &conn)
+		i++
 
 		go func() {
-			log.Println("Initial ack")
-			if !cm.WaitForAck(addr, &conn) {
-				return
-			}
+			log.Println("Initial PingPong")
+			cm.PingPong(addr, &conn)
+			log.Println("Initial PingPong done")
 		}()
 
 		go func() {

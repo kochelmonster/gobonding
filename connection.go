@@ -40,7 +40,7 @@ type ConnManager struct {
 
 	ChunkSupply []*Chunk
 
-	ActiveChannels map[string]*channel
+	Channels map[string]*channel
 
 	UploadBytes   int
 	DownloadBytes int
@@ -49,102 +49,134 @@ type ConnManager struct {
 }
 
 type channel struct {
-	lastPing     time.Time
-	signal       chan bool
-	addr         net.Addr
-	sendCount    int
-	receiveCount int
+	id            uint16
+	signal        chan bool
+	SendChl       chan Message
+	addr          net.Addr
+	sendCount     int
+	receiveCount  int
+	receiveWeight uint16
+	sendWeight    uint16
 }
 
 func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 	heartbeat, err := time.ParseDuration(config.HeartBeatTime)
 	if err != nil {
-		heartbeat = 2 * time.Second
+		heartbeat = 20 * time.Second
 	}
 
 	result := &ConnManager{
+		mu:              sync.Mutex{},
 		DispatchChannel: make(chan *Chunk, 10),
 		CollectChannel:  make(chan *Chunk, 10),
 		ChunkSupply:     make([]*Chunk, 0),
-		ActiveChannels:  make(map[string]*channel),
+		Channels:        make(map[string]*channel),
 		UploadBytes:     0,
 		DownloadBytes:   0,
 		heartbeat:       heartbeat,
 	}
 
+	go result.startDispatcher(ctx)
+	go result.startBalancer(ctx)
+
 	if config.MonitorPath != "" {
-		period, err := time.ParseDuration(config.MonitorTick)
-		if err != nil {
-			period = 20 * time.Second
-		}
-
-		dirPath := filepath.Dir(config.MonitorPath)
-		err = os.MkdirAll(dirPath, os.ModePerm)
-		if err == nil {
-			go func() {
-				ts := time.Now()
-				maxDSpeed := float64(0)
-				maxUSpeed := float64(0)
-
-				// Write Monitor File
-				for {
-					select {
-					case <-time.After(period):
-						duration := float64(time.Since(ts) / time.Second)
-						dSpeed := float64(result.DownloadBytes) / duration
-						uSpeed := float64(result.UploadBytes) / duration
-
-						maxDSpeed = math.Max(dSpeed, maxDSpeed)
-						maxUSpeed = math.Max(uSpeed, maxUSpeed)
-
-						result.DownloadBytes = 0
-						result.UploadBytes = 0
-						ts = time.Now()
-
-						channels := ""
-						for id, chl := range result.ActiveChannels {
-							if result.IsActive(chl) {
-								channels += fmt.Sprintf("  - %v(%v/%v)\n",
-									id, chl.sendCount, chl.receiveCount)
-							}
-						}
-
-						text := fmt.Sprintf(monitorTemplate, int(dSpeed), int(uSpeed), int(maxDSpeed),
-							int(maxUSpeed), channels)
-
-						os.WriteFile(config.MonitorPath, []byte(text), 0666)
-
-						// write
-					case <-ctx.Done():
-						return
-					}
-				}
-			}()
-		}
+		go result.startMonitor(ctx, config)
 	}
 
 	return result
 }
 
 func (cm *ConnManager) Close() {
-	for _, c := range cm.ActiveChannels {
+	for _, c := range cm.Channels {
 		close(c.signal)
 	}
 	close(cm.DispatchChannel)
 }
 
-// Starts tracking connections
-func (cm *ConnManager) SendPings(ctx context.Context, conn WriteConnection) {
-	timer := time.NewTicker(cm.heartbeat)
+func (cm *ConnManager) startDispatcher(ctx context.Context) {
 	for {
 		select {
-		case <-timer.C:
-			for _, chl := range cm.ActiveChannels {
-				(&PingMessage{MsgBase{chl.addr}}).Write(conn)
+		case chunk := <-cm.DispatchChannel:
+			for _, c := range cm.Channels {
+				for i := 0; i < int(c.sendWeight); i++ {
+					c.SendChl <- chunk
+				}
 			}
 
 		case <-ctx.Done():
 			return
+		}
+	}
+}
+
+func (cm *ConnManager) startBalancer(ctx context.Context) {
+	ticker := time.NewTicker(20 * time.Second)
+	for {
+		select {
+		case <-ticker.C:
+			sum := 0
+			for _, c := range cm.Channels {
+				sum += int(c.receiveWeight)
+			}
+			if sum > 100 {
+				for _, c := range cm.Channels {
+					c.SendChl <- &WeightMsg{
+						MsgBase: MsgBase{Addr: c.addr},
+						Weight:  c.receiveWeight / 20,
+					}
+				}
+			}
+
+		case <-ctx.Done():
+			return
+		}
+	}
+
+}
+
+func (cm *ConnManager) startMonitor(ctx context.Context, config *Config) {
+	period, err := time.ParseDuration(config.MonitorTick)
+	if err != nil {
+		period = 20 * time.Second
+	}
+
+	dirPath := filepath.Dir(config.MonitorPath)
+	err = os.MkdirAll(dirPath, os.ModePerm)
+	if err == nil {
+		ts := time.Now()
+		maxDSpeed := float64(0)
+		maxUSpeed := float64(0)
+
+		// Write Monitor File
+		for {
+			select {
+			case <-time.After(period):
+				duration := float64(time.Since(ts) / time.Second)
+				dSpeed := float64(cm.DownloadBytes) / duration
+				uSpeed := float64(cm.UploadBytes) / duration
+
+				maxDSpeed = math.Max(dSpeed, maxDSpeed)
+				maxUSpeed = math.Max(uSpeed, maxUSpeed)
+
+				cm.DownloadBytes = 0
+				cm.UploadBytes = 0
+				ts = time.Now()
+
+				channels := ""
+				for id, chl := range cm.Channels {
+					channels += fmt.Sprintf("  - %v(%v/%v)\n",
+						id, chl.sendCount, chl.receiveCount)
+				}
+
+				text := fmt.Sprintf(monitorTemplate, int(dSpeed), int(uSpeed), int(maxDSpeed),
+					int(maxUSpeed), channels)
+
+				os.WriteFile(config.MonitorPath, []byte(text), 0666)
+
+				// write
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 }
@@ -170,139 +202,116 @@ func (cm *ConnManager) FreeChunk(chunk *Chunk) {
 	cm.mu.Unlock()
 }
 
-func (cm *ConnManager) IsActive(c *channel) bool {
-	return time.Since(c.lastPing) < 2*cm.heartbeat
-}
-
-func (cm *ConnManager) AddChannel(addr net.Addr, conn WriteConnection) {
+func (cm *ConnManager) AddChannel(id uint16, addr net.Addr, conn WriteConnection) {
 	signal := make(chan bool, 1)
 	chl := &channel{
-		lastPing:     time.Now(),
-		signal:       signal,
-		addr:         addr,
-		sendCount:    0,
-		receiveCount: 0,
+		id:            id,
+		signal:        signal,
+		SendChl:       make(chan Message),
+		addr:          addr,
+		sendCount:     0,
+		receiveCount:  0,
+		receiveWeight: 0,
+		sendWeight:    0,
 	}
-	key := addr.(*net.UDPAddr).IP.String()
+	key := toKey(addr)
 	{
 		cm.mu.Lock()
 		defer cm.mu.Unlock()
-		cm.ActiveChannels[key] = chl
+		cm.Channels[key] = chl
 	}
 	log.Println("AddChannel", key)
 
 	go func() {
-		sendCount := 0
 		for {
-			if cm.IsActive(chl) {
-				timer := time.NewTimer(cm.heartbeat)
-				select {
-				case chunk, more := <-cm.DispatchChannel:
-					if !more {
-						return
-					}
-
-					if sendCount >= 10 {
-						if !cm.waitForAck(chl, conn, "msg") {
-							return
-						}
-						sendCount = 0
-					}
-
-					chunk.SetRouterAddr(addr)
-					log.Println("Send", addr, sendCount, chunk)
-					chunk.Write(conn)
-					cm.UploadBytes += int(chunk.Size)
-
-					chl.sendCount++
-					sendCount++
-				case <-timer.C:
-					cm.waitForAck(chl, conn, "timeout")
+			timer := time.NewTimer(cm.heartbeat)
+			select {
+			case msg, more := <-chl.SendChl:
+				if !more {
+					return
 				}
-			} else if !cm.waitForAck(chl, conn, "inactive") {
-				return
+
+				msg.SetRouterAddr(chl.addr) // addr port can change after reconnect
+				// log.Println("Send", addr, sendCount, chunk)
+				cm.UploadBytes += msg.Write(conn)
+
+				chl.sendCount++
+			case <-timer.C:
+				cm.pingPong(chl, conn, "timeout")
 			}
 		}
 	}()
 }
 
-func (cm *ConnManager) RequestAck(addr net.Addr, conn WriteConnection) {
-	(&RequestAckMsg{MsgBase{Addr: addr}}).Write(conn)
+func (cm *ConnManager) SendPing(id uint16, addr net.Addr, conn WriteConnection) {
+	(&PingMsg{
+		MsgBase: MsgBase{addr},
+		Id:      id,
+	}).Write(conn)
 }
 
-func (cm *ConnManager) WaitForAck(addr net.Addr, conn WriteConnection) bool {
-	key := addr.(*net.UDPAddr).IP.String()
-	if c, ok := cm.ActiveChannels[key]; ok {
-		return cm.waitForAck(c, conn, "start")
+func (cm *ConnManager) PingPong(addr net.Addr, conn WriteConnection) bool {
+	key := toKey(addr)
+	if c, ok := cm.Channels[key]; ok {
+		return cm.pingPong(c, conn, "start")
 	}
 	return false
 }
 
-func (cm *ConnManager) waitForAck(c *channel, conn WriteConnection, cause string) bool {
+func (cm *ConnManager) pingPong(c *channel, conn WriteConnection, cause string) bool {
 	log.Println("Wait For Ack", c.addr, cause)
-	cm.RequestAck(c.addr, conn)
+	cm.SendPing(c.id, c.addr, conn)
 
-	ticker := time.NewTicker(2 * cm.heartbeat)
-	for {
+	ticker := time.NewTicker(time.Second)
+	for i := 0; i < 10; i++ {
 		select {
 		case _, more := <-c.signal:
 			return more
 		case <-ticker.C:
-			cm.RequestAck(c.addr, conn)
+			log.Println("ResendAck", c.addr)
+			cm.SendPing(c.id, c.addr, conn)
 		}
 	}
+	log.Println("Disconnected")
+	c.sendWeight = 0
+	return true
 }
 
-func (cm *ConnManager) GotAck(addr net.Addr) {
-	key := addr.(*net.UDPAddr).IP.String()
-	if c, ok := cm.ActiveChannels[key]; ok {
-		delay := time.Since(c.lastPing)
-		if delay > 2*cm.heartbeat {
-			log.Println("Channel Reconnected", key, delay)
-		}
-		c.lastPing = time.Now()
+func (cm *ConnManager) GotPong(addr net.Addr) {
+	key := toKey(addr)
+	if c, ok := cm.Channels[key]; ok {
 		if len(c.signal) == 0 {
 			// log.Println("GotAck", addr)
 			c.signal <- true
+		}
+		if c.sendWeight == 0 {
+			c.sendWeight = 1
 		}
 	}
 }
 
 func (cm *ConnManager) ReceivedChunk(addr net.Addr, chunk *Chunk) {
-	key := addr.(*net.UDPAddr).IP.String()
-	if c, ok := cm.ActiveChannels[key]; ok {
+	key := toKey(addr)
+	if c, ok := cm.Channels[key]; ok {
 		c.receiveCount++
+		c.receiveWeight++
 	}
 	cm.DownloadBytes += int(chunk.Size)
 }
 
-func (cm *ConnManager) SendAck(addr net.Addr, conn WriteConnection) {
+func (cm *ConnManager) SendPong(id uint16, addr net.Addr, conn WriteConnection) {
 	// log.Println("SendAck", addr)
-	key := addr.(*net.UDPAddr).IP.String()
-	if c, ok := cm.ActiveChannels[key]; ok {
+	key := toKey(addr)
+	if c, ok := cm.Channels[key]; ok {
 		c.addr = addr
 	} else {
-		cm.AddChannel(addr, conn)
+		cm.AddChannel(id, addr, conn)
 	}
 
-	(&AckMessage{MsgBase{Addr: addr}}).Write(conn)
-}
-
-func (cm *ConnManager) PurgeChannels(ctx context.Context) {
-	timer := time.NewTicker(20 * time.Minute)
-	for {
-		select {
-		case <-timer.C:
-			for key, chl := range cm.ActiveChannels {
-				if time.Since(chl.lastPing) > 10*time.Minute {
-					delete(cm.ActiveChannels, key)
-				}
-			}
-
-		case <-ctx.Done():
-			return
-		}
-	}
+	(&PongMsg{
+		MsgBase: MsgBase{addr},
+		Id:      id,
+	}).Write(conn)
 }
 
 /*
@@ -328,4 +337,8 @@ func ToIP(address string) (net.IP, error) {
 		return nil, errors.New("network device has not ip4 address")
 	}
 	return ip, nil
+}
+
+func toKey(addr net.Addr) string {
+	return addr.(*net.UDPAddr).IP.String()
 }

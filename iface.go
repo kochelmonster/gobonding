@@ -48,7 +48,6 @@ func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager)
 		default:
 			log.Println("Error reading packet", err)
 		}
-
 		chunk.Size = uint16(size)
 
 		select {
