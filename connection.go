@@ -1,6 +1,7 @@
 package gobonding
 
 import (
+	"container/heap"
 	"context"
 	"errors"
 	"fmt"
@@ -38,6 +39,10 @@ type ConnManager struct {
 	// Receives chunk of Proxy Channels
 	CollectChannel chan *Chunk
 
+	// Outputs ordered chunks
+	OrderedChannel chan *Chunk
+	Queue          PriorityQueue
+
 	ChunkSupply []*Chunk
 
 	Channels map[string]*channel
@@ -69,6 +74,8 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		mu:              sync.Mutex{},
 		DispatchChannel: make(chan *Chunk, 10),
 		CollectChannel:  make(chan *Chunk, 10),
+		OrderedChannel:  make(chan *Chunk, 10),
+		Queue:           NewQueue(),
 		ChunkSupply:     make([]*Chunk, 0),
 		Channels:        make(map[string]*channel),
 		UploadBytes:     0,
@@ -78,6 +85,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 
 	go result.startDispatcher(ctx)
 	go result.startBalancer(ctx)
+	go result.startSorter(ctx)
 
 	if config.MonitorPath != "" {
 		go result.startMonitor(ctx, config)
@@ -186,6 +194,56 @@ func (cm *ConnManager) startMonitor(ctx context.Context, config *Config) {
 				return
 			}
 		}
+	}
+}
+
+func (cm *ConnManager) sendQueue(ctx context.Context, order uint16) (uint16, bool) {
+	for len(cm.Queue) > 0 {
+		chunk := heap.Pop(&cm.Queue).(*Chunk)
+		order = chunk.Idx
+		select {
+		case cm.OrderedChannel <- chunk:
+
+		case <-ctx.Done():
+			return order, true
+		}
+	}
+	return order + 1, false
+}
+
+func (cm *ConnManager) startSorter(ctx context.Context) {
+	// Sorts chunks that came not in order
+	timer := time.NewTimer(time.Second)
+	timer.Stop()
+	order := uint16(0)
+	for {
+		select {
+		case chunk := <-cm.CollectChannel:
+			if chunk.Idx == order && len(cm.Queue) == 0 {
+				cm.OrderedChannel <- chunk
+				order++
+				continue
+			}
+
+			heap.Push(&cm.Queue, chunk)
+			if len(cm.Queue) == 1 {
+				timer.Reset(time.Second)
+				continue
+			}
+			log.Println("to Queue", chunk.Idx, order, len(cm.Queue))
+
+		case <-timer.C:
+			o, done := cm.sendQueue(ctx, order)
+			if done {
+				return
+			}
+			order = o
+			timer.Stop()
+
+		case <-ctx.Done():
+			return
+		}
+
 	}
 }
 

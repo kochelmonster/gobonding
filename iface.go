@@ -38,6 +38,7 @@ func IfaceSetup(name string) *water.Interface {
 }
 
 func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager) {
+	order := uint16(0)
 	for {
 		chunk := cm.AllocChunk()
 		size, err := iface.Read(chunk.Data[0:])
@@ -49,6 +50,8 @@ func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager)
 			log.Println("Error reading packet", err)
 		}
 		chunk.Size = uint16(size)
+		chunk.Idx = order
+		order++
 
 		select {
 		case cm.DispatchChannel <- chunk:
@@ -63,7 +66,7 @@ func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager)
 func WriteToIface(ctx context.Context, iface *water.Interface, cm *ConnManager) {
 	for {
 		select {
-		case chunk := <-cm.CollectChannel:
+		case chunk := <-cm.OrderedChannel:
 			// log.Println("Write", chunk)
 			_, err := iface.Write(chunk.Data[:chunk.Size])
 			if err != nil {

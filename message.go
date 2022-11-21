@@ -47,13 +47,14 @@ func (m *MsgBase) RouterAddr() net.Addr {
 
 type Chunk struct {
 	MsgBase
-	Data [BUFFERSIZE]byte
+	Data [BUFFERSIZE + 2]byte
 	Size uint16
+	Idx  uint16
 }
 
 func (c *Chunk) Write(conn WriteConnection) int {
 	// log.Println("Send", c.Addr)
-	size, _ := conn.WriteTo(c.Data[:c.Size], c.Addr)
+	size, _ := conn.WriteTo(c.Data[:c.Size+2], c.Addr)
 	return size
 }
 
@@ -62,11 +63,11 @@ func (c *Chunk) Action(cm *ConnManager, conn WriteConnection) {
 }
 
 func (c *Chunk) String() string {
-	header, err := ipv4.ParseHeader(c.Data[0:])
+	header, err := ipv4.ParseHeader(c.Data[2:])
 	if err != nil {
 		return "Error parsing buffer"
 	} else {
-		return fmt.Sprintf("Packet %v: %v", c.Size, header)
+		return fmt.Sprintf("Packet %v(%v): %v", c.Idx, c.Size, header)
 	}
 }
 
@@ -76,8 +77,8 @@ type PongMsg struct {
 }
 
 func (m *PongMsg) Write(conn WriteConnection) int {
-	buffer := []byte{0, 'o', 0, 0}
-	binary.BigEndian.PutUint16(buffer[2:], m.Id)
+	buffer := []byte{0, 0, 0, 'o', 0, 0}
+	binary.BigEndian.PutUint16(buffer[4:], m.Id)
 	conn.WriteTo(buffer, m.Addr)
 	return 0
 }
@@ -96,8 +97,8 @@ type PingMsg struct {
 }
 
 func (m *PingMsg) Write(conn WriteConnection) int {
-	buffer := []byte{0, 'i', 0, 0}
-	binary.BigEndian.PutUint16(buffer[2:], m.Id)
+	buffer := []byte{0, 0, 0, 'i', 0, 0}
+	binary.BigEndian.PutUint16(buffer[4:], m.Id)
 	conn.WriteTo(buffer, m.Addr)
 	return 0
 }
@@ -116,8 +117,8 @@ type WeightMsg struct {
 }
 
 func (m *WeightMsg) Write(conn WriteConnection) int {
-	buffer := []byte{0, 'w', 0, 0}
-	binary.BigEndian.PutUint16(buffer[2:], m.Weight)
+	buffer := []byte{0, 0, 0, 'w', 0, 0}
+	binary.BigEndian.PutUint16(buffer[4:], m.Weight)
 	conn.WriteTo(buffer, m.Addr)
 	return 0
 }
@@ -143,8 +144,8 @@ func ReadMessage(conn ReadConnection, cm *ConnManager) (Message, error) {
 	}
 	chunk.Addr = addr
 
-	if chunk.Data[0] == 0 { // the ip header first byte
-		id := binary.BigEndian.Uint16(chunk.Data[2:4])
+	if chunk.Data[2] == 0 { // the ip header first byte
+		id := binary.BigEndian.Uint16(chunk.Data[4:6])
 		cm.FreeChunk(chunk)
 
 		switch chunk.Data[1] {
@@ -168,7 +169,7 @@ func ReadMessage(conn ReadConnection, cm *ConnManager) (Message, error) {
 		log.Println("control message")
 	}
 
-	chunk.Size = uint16(size)
+	chunk.Size = uint16(size) - 2
 	cm.ReceivedChunk(addr, chunk)
 	return chunk, nil
 }
