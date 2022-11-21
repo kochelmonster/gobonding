@@ -73,7 +73,7 @@ func createChannels(ctx context.Context, cm *gobonding.ConnManager, config *gobo
 				if err != nil {
 					return
 				}
-				// log.Println("Received", addr, msg)
+				//log.Println("Received", addr, msg)
 				msg.Action(cm, &conn)
 			}
 		}()

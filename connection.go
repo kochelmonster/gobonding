@@ -95,22 +95,22 @@ func (cm *ConnManager) Close() {
 
 func (cm *ConnManager) startDispatcher(ctx context.Context) {
 	for {
-		select {
-		case chunk := <-cm.DispatchChannel:
-			for _, c := range cm.Channels {
-				for i := 0; i < int(c.sendWeight); i++ {
+		for _, c := range cm.Channels {
+			for i := 0; i < int(c.sendWeight); i++ {
+				select {
+				case chunk := <-cm.DispatchChannel:
 					c.SendChl <- chunk
+
+				case <-ctx.Done():
+					return
 				}
 			}
-
-		case <-ctx.Done():
-			return
 		}
 	}
 }
 
 func (cm *ConnManager) startBalancer(ctx context.Context) {
-	ticker := time.NewTicker(20 * time.Second)
+	ticker := time.NewTicker(10 * time.Second)
 	for {
 		select {
 		case <-ticker.C:
@@ -118,12 +118,20 @@ func (cm *ConnManager) startBalancer(ctx context.Context) {
 			for _, c := range cm.Channels {
 				sum += int(c.receiveWeight)
 			}
+
 			if sum > 100 {
+				log.Println("Balancer", sum)
 				for _, c := range cm.Channels {
+					weight := uint16(int(c.receiveWeight*10) / sum)
+					if c.receiveWeight != 0 && weight == 0 {
+						weight = 1
+					}
+					log.Println("Send Weight", c.addr, c.receiveWeight, weight)
 					c.SendChl <- &WeightMsg{
 						MsgBase: MsgBase{Addr: c.addr},
-						Weight:  c.receiveWeight / 20,
+						Weight:  weight,
 					}
+					c.receiveWeight = 0
 				}
 			}
 
@@ -233,11 +241,13 @@ func (cm *ConnManager) AddChannel(id uint16, addr net.Addr, conn WriteConnection
 
 				msg.SetRouterAddr(chl.addr) // addr port can change after reconnect
 				// log.Println("Send", addr, sendCount, chunk)
-				cm.UploadBytes += msg.Write(conn)
-
-				chl.sendCount++
+				size := msg.Write(conn)
+				if size > 0 {
+					cm.UploadBytes += size
+					chl.sendCount++
+				}
 			case <-timer.C:
-				cm.pingPong(chl, conn, "timeout")
+				cm.pingPong(chl, conn)
 			}
 		}
 	}()
@@ -253,13 +263,13 @@ func (cm *ConnManager) SendPing(id uint16, addr net.Addr, conn WriteConnection) 
 func (cm *ConnManager) PingPong(addr net.Addr, conn WriteConnection) bool {
 	key := toKey(addr)
 	if c, ok := cm.Channels[key]; ok {
-		return cm.pingPong(c, conn, "start")
+		return cm.pingPong(c, conn)
 	}
 	return false
 }
 
-func (cm *ConnManager) pingPong(c *channel, conn WriteConnection, cause string) bool {
-	log.Println("Wait For Ack", c.addr, cause)
+func (cm *ConnManager) pingPong(c *channel, conn WriteConnection) bool {
+	//log.Println("PingPong", c.addr)
 	cm.SendPing(c.id, c.addr, conn)
 
 	ticker := time.NewTicker(time.Second)
@@ -268,7 +278,7 @@ func (cm *ConnManager) pingPong(c *channel, conn WriteConnection, cause string) 
 		case _, more := <-c.signal:
 			return more
 		case <-ticker.C:
-			log.Println("ResendAck", c.addr)
+			log.Println("ResendPing", c.addr)
 			cm.SendPing(c.id, c.addr, conn)
 		}
 	}

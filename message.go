@@ -125,6 +125,7 @@ func (m *WeightMsg) Write(conn WriteConnection) int {
 func (m *WeightMsg) Action(cm *ConnManager, conn WriteConnection) {
 	key := toKey(m.Addr)
 	if c, ok := cm.Channels[key]; ok {
+		log.Println("set Weight", m.Addr, m.Weight)
 		c.sendWeight = m.Weight
 	}
 }
