@@ -30,7 +30,7 @@ func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gob
 		if err != nil {
 			return
 		}
-		log.Println("Received", msg)
+		// log.Println("Received", msg)
 		msg.Action(cm, conn)
 	}
 }
@@ -54,7 +54,7 @@ func main() {
 
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
-	cm := gobonding.NewConnMananger(ctx, config)
+	cm := gobonding.NewConnMananger(config).Start(ctx)
 
 	go startDispatcher(ctx, cm, config)
 	go gobonding.WriteToIface(ctx, iface, cm)

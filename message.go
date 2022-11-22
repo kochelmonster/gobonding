@@ -26,7 +26,7 @@ type ReadConnection interface {
 }
 
 type Message interface {
-	Write(conn WriteConnection) int
+	Write(cm *ConnManager, conn WriteConnection) int
 	Action(cm *ConnManager, conn WriteConnection)
 	RouterAddr() net.Addr
 	SetRouterAddr(addr net.Addr)
@@ -52,9 +52,11 @@ type Chunk struct {
 	Idx  uint16
 }
 
-func (c *Chunk) Write(conn WriteConnection) int {
+func (c *Chunk) Write(cm *ConnManager, conn WriteConnection) int {
 	// log.Println("Send", c.Addr)
+	binary.BigEndian.PutUint16(c.Data[:2], c.Idx)
 	size, _ := conn.WriteTo(c.Data[:c.Size+2], c.Addr)
+	cm.FreeChunk(c)
 	return size
 }
 
@@ -76,7 +78,7 @@ type PongMsg struct {
 	Id uint16
 }
 
-func (m *PongMsg) Write(conn WriteConnection) int {
+func (m *PongMsg) Write(cm *ConnManager, conn WriteConnection) int {
 	buffer := []byte{0, 0, 0, 'o', 0, 0}
 	binary.BigEndian.PutUint16(buffer[4:], m.Id)
 	conn.WriteTo(buffer, m.Addr)
@@ -96,7 +98,7 @@ type PingMsg struct {
 	Id uint16
 }
 
-func (m *PingMsg) Write(conn WriteConnection) int {
+func (m *PingMsg) Write(cm *ConnManager, conn WriteConnection) int {
 	buffer := []byte{0, 0, 0, 'i', 0, 0}
 	binary.BigEndian.PutUint16(buffer[4:], m.Id)
 	conn.WriteTo(buffer, m.Addr)
@@ -116,7 +118,7 @@ type WeightMsg struct {
 	Weight uint16
 }
 
-func (m *WeightMsg) Write(conn WriteConnection) int {
+func (m *WeightMsg) Write(cm *ConnManager, conn WriteConnection) int {
 	buffer := []byte{0, 0, 0, 'w', 0, 0}
 	binary.BigEndian.PutUint16(buffer[4:], m.Weight)
 	conn.WriteTo(buffer, m.Addr)
@@ -148,7 +150,7 @@ func ReadMessage(conn ReadConnection, cm *ConnManager) (Message, error) {
 		id := binary.BigEndian.Uint16(chunk.Data[4:6])
 		cm.FreeChunk(chunk)
 
-		switch chunk.Data[1] {
+		switch chunk.Data[3] {
 		case 'o':
 			return &PongMsg{
 				MsgBase: MsgBase{Addr: addr},
@@ -170,6 +172,7 @@ func ReadMessage(conn ReadConnection, cm *ConnManager) (Message, error) {
 	}
 
 	chunk.Size = uint16(size) - 2
+	chunk.Idx = binary.BigEndian.Uint16(chunk.Data[:2])
 	cm.ReceivedChunk(addr, chunk)
 	return chunk, nil
 }

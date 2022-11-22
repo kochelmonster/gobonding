@@ -51,6 +51,7 @@ type ConnManager struct {
 	DownloadBytes int
 
 	heartbeat time.Duration
+	config    *Config
 }
 
 type channel struct {
@@ -64,7 +65,7 @@ type channel struct {
 	sendWeight    uint16
 }
 
-func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
+func NewConnMananger(config *Config) *ConnManager {
 	heartbeat, err := time.ParseDuration(config.HeartBeatTime)
 	if err != nil {
 		heartbeat = 20 * time.Second
@@ -81,17 +82,21 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		UploadBytes:     0,
 		DownloadBytes:   0,
 		heartbeat:       heartbeat,
-	}
-
-	go result.startDispatcher(ctx)
-	go result.startBalancer(ctx)
-	go result.startSorter(ctx)
-
-	if config.MonitorPath != "" {
-		go result.startMonitor(ctx, config)
+		config:          config,
 	}
 
 	return result
+}
+
+func (cm *ConnManager) Start(ctx context.Context) *ConnManager {
+	go cm.startDispatcher(ctx)
+	go cm.startBalancer(ctx)
+	go cm.startSorter(ctx)
+
+	if cm.config.MonitorPath != "" {
+		go cm.startMonitor(ctx, cm.config)
+	}
+	return cm
 }
 
 func (cm *ConnManager) Close() {
@@ -197,48 +202,77 @@ func (cm *ConnManager) startMonitor(ctx context.Context, config *Config) {
 	}
 }
 
-func (cm *ConnManager) sendQueue(ctx context.Context, order uint16) (uint16, bool) {
-	for len(cm.Queue) > 0 {
-		chunk := heap.Pop(&cm.Queue).(*Chunk)
-		order = chunk.Idx
-		select {
-		case cm.OrderedChannel <- chunk:
+func (cm *ConnManager) sendFirst(ctx context.Context) uint16 {
+	chunk := heap.Pop(&cm.Queue).(*Chunk)
+	select {
+	case cm.OrderedChannel <- chunk:
+		return chunk.Idx + 1
+	case <-ctx.Done():
+		return 0
+	}
+}
 
-		case <-ctx.Done():
-			return order, true
+func (cm *ConnManager) sendQueue(ctx context.Context, order uint16) uint16 {
+	for len(cm.Queue) > 0 {
+		if ctx.Err() != nil {
+			return order
+		}
+
+		peek := cm.Queue[0]
+		switch {
+		case peek.Idx <= order:
+			order = cm.sendFirst(ctx)
+
+		default: // peek.Idx > order
+			return order
 		}
 	}
-	return order + 1, false
+	return order
 }
 
 func (cm *ConnManager) startSorter(ctx context.Context) {
 	// Sorts chunks that came not in order
-	timer := time.NewTimer(time.Second)
-	timer.Stop()
+	ticker := time.NewTicker(time.Second)
+	ticker.Stop()
+	tickerActive := false
 	order := uint16(0)
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if tickerActive && len(cm.Queue) == 0 {
+			ticker.Stop()
+			tickerActive = false
+		}
+
 		select {
 		case chunk := <-cm.CollectChannel:
-			if chunk.Idx == order && len(cm.Queue) == 0 {
+			//log.Println("Received unordered", chunk.Idx, order)
+			if chunk.Idx == order {
 				cm.OrderedChannel <- chunk
 				order++
+				order = cm.sendQueue(ctx, order)
+				if tickerActive && len(cm.Queue) > 0 {
+					ticker.Reset(5 * time.Millisecond)
+				}
 				continue
 			}
-
 			heap.Push(&cm.Queue, chunk)
-			if len(cm.Queue) == 1 {
-				timer.Reset(time.Second)
-				continue
+			if !tickerActive {
+				ticker.Reset(5 * time.Millisecond)
+				tickerActive = true
+				// log.Println("Start Ticker", order, cm.Queue[0].Idx, len(cm.Queue))
 			}
-			log.Println("to Queue", chunk.Idx, order, len(cm.Queue))
 
-		case <-timer.C:
-			o, done := cm.sendQueue(ctx, order)
-			if done {
-				return
+		case <-ticker.C:
+			if len(cm.Queue) > 0 {
+				//log.Println("Flush", order, len(cm.Queue))
+				order = cm.sendQueue(ctx, cm.Queue[0].Idx)
+				/*log.Println("Flushed", order, len(cm.Queue))
+				for _, c := range cm.Queue {
+					log.Println("       -", c.Idx)
+				}*/
 			}
-			order = o
-			timer.Stop()
 
 		case <-ctx.Done():
 			return
@@ -278,7 +312,7 @@ func (cm *ConnManager) AddChannel(id uint16, addr net.Addr, conn WriteConnection
 		sendCount:     0,
 		receiveCount:  0,
 		receiveWeight: 0,
-		sendWeight:    0,
+		sendWeight:    1,
 	}
 	key := toKey(addr)
 	{
@@ -299,7 +333,7 @@ func (cm *ConnManager) AddChannel(id uint16, addr net.Addr, conn WriteConnection
 
 				msg.SetRouterAddr(chl.addr) // addr port can change after reconnect
 				// log.Println("Send", addr, sendCount, chunk)
-				size := msg.Write(conn)
+				size := msg.Write(cm, conn)
 				if size > 0 {
 					cm.UploadBytes += size
 					chl.sendCount++
@@ -315,7 +349,7 @@ func (cm *ConnManager) SendPing(id uint16, addr net.Addr, conn WriteConnection) 
 	(&PingMsg{
 		MsgBase: MsgBase{addr},
 		Id:      id,
-	}).Write(conn)
+	}).Write(cm, conn)
 }
 
 func (cm *ConnManager) PingPong(addr net.Addr, conn WriteConnection) bool {
@@ -379,7 +413,7 @@ func (cm *ConnManager) SendPong(id uint16, addr net.Addr, conn WriteConnection) 
 	(&PongMsg{
 		MsgBase: MsgBase{addr},
 		Id:      id,
-	}).Write(conn)
+	}).Write(cm, conn)
 }
 
 /*

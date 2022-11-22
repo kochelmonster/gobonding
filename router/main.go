@@ -104,9 +104,10 @@ func main() {
 	// start routes changes in config monitoring
 	log.Println("Interface parameters configured", iface)
 
-	cm := gobonding.NewConnMananger(ctx, config)
+	cm := gobonding.NewConnMananger(config)
 
 	createChannels(ctx, cm, config)
+	cm.Start(ctx)
 	go gobonding.WriteToIface(ctx, iface, cm)
 	go gobonding.ReadFromIface(ctx, iface, cm)
 

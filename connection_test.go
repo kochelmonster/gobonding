@@ -9,7 +9,7 @@ import (
 
 func createConnManager(ctx context.Context) *gobonding.ConnManager {
 	config := gobonding.Config{}
-	return gobonding.NewConnMananger(ctx, &config)
+	return gobonding.NewConnMananger(&config).Start(ctx)
 }
 
 func TestAllocAndFree(t *testing.T) {
