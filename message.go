@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	MTU = 1500
+	MTU = 1450
 
 	// BSIZE is size of buffer to receive packets
 	// (little bit bigger than maximum)
@@ -126,11 +126,7 @@ func (m *WeightMsg) Write(cm *ConnManager, conn WriteConnection) int {
 }
 
 func (m *WeightMsg) Action(cm *ConnManager, conn WriteConnection) {
-	key := toKey(m.Addr)
-	if c, ok := cm.Channels[key]; ok {
-		log.Println("set Weight", m.Addr, m.Weight)
-		c.sendWeight = m.Weight
-	}
+	cm.changeWeights(m.Addr, int(m.Weight))
 }
 
 func (m *WeightMsg) String() string {
