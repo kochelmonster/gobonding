@@ -43,7 +43,7 @@ type ConnManager struct {
 	OrderedChannel chan *Chunk
 	Queue          PriorityQueue
 
-	ChunkSupply []*Chunk
+	ChunkSupply chan *Chunk
 
 	Channels map[string]*channel
 
@@ -51,8 +51,13 @@ type ConnManager struct {
 	DownloadBytes int
 
 	rcount    int
+	minWeight int
 	heartbeat time.Duration
 	config    *Config
+
+	minRtick time.Duration
+	maxRtick time.Duration
+	rtick    time.Time
 }
 
 type channel struct {
@@ -73,18 +78,22 @@ func NewConnMananger(config *Config) *ConnManager {
 	}
 
 	result := &ConnManager{
-		mu:              sync.Mutex{},
-		DispatchChannel: make(chan *Chunk, 10),
-		CollectChannel:  make(chan *Chunk, 10),
-		OrderedChannel:  make(chan *Chunk, 10),
+		DispatchChannel: make(chan *Chunk, 1000),
+		CollectChannel:  make(chan *Chunk, 100),
+		OrderedChannel:  make(chan *Chunk, 100),
 		Queue:           NewQueue(),
-		ChunkSupply:     make([]*Chunk, 0),
+		ChunkSupply:     make(chan *Chunk, 2000),
 		Channels:        make(map[string]*channel),
 		UploadBytes:     0,
 		DownloadBytes:   0,
 		rcount:          0,
 		heartbeat:       heartbeat,
 		config:          config,
+		minWeight:       100,
+
+		minRtick: 100 * time.Second,
+		maxRtick: time.Duration(0),
+		rtick:    time.Now(),
 	}
 
 	return result
@@ -112,7 +121,10 @@ func (cm *ConnManager) startDispatcher(ctx context.Context) {
 	for {
 		for _, c := range cm.Channels {
 			amount := 0
-			for amount < c.sendWeight {
+			// limit := (c.sendWeight * MTU) / cm.minWeight
+			limit := MTU * 10
+			// log.Println("send to", c.addr, limit)
+			for amount < limit {
 				select {
 				case chunk := <-cm.DispatchChannel:
 					c.SendChl <- chunk
@@ -160,10 +172,12 @@ func (cm *ConnManager) startMonitor(ctx context.Context, config *Config) {
 						id, chl.sendCount, chl.receiveCount)
 				}
 
-				text := fmt.Sprintf(monitorTemplate, int(dSpeed), int(uSpeed), int(maxDSpeed),
-					int(maxUSpeed), channels)
+				log.Println("Ticks", cm.minRtick, cm.maxRtick)
+				/*
+					text := fmt.Sprintf(monitorTemplate, int(dSpeed), int(uSpeed), int(maxDSpeed),
+						int(maxUSpeed), channels)
 
-				os.WriteFile(config.MonitorPath, []byte(text), 0666)
+					os.WriteFile(config.MonitorPath, []byte(text), 0666)*/
 
 				// write
 			case <-ctx.Done():
@@ -206,7 +220,7 @@ func (cm *ConnManager) startBalancer(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			if cm.rcount > 100 {
+			if cm.rcount > 100 && false {
 				sum := 0
 				for _, c := range cm.Channels {
 					sum += int(c.receiveWeight)
@@ -241,6 +255,7 @@ func (cm *ConnManager) startSorter(ctx context.Context) {
 	ticker.Stop()
 	tickerActive := false
 	order := uint16(0)
+	const SKIP_TIME = 800 * time.Millisecond
 	for {
 		if ctx.Err() != nil {
 			return
@@ -259,26 +274,29 @@ func (cm *ConnManager) startSorter(ctx context.Context) {
 				if len(cm.Queue) > 0 {
 					order = cm.sendQueue(ctx, order)
 					if tickerActive && len(cm.Queue) > 0 {
-						ticker.Reset(5 * time.Millisecond)
+						ticker.Reset(SKIP_TIME)
 					}
 				}
 				continue
 			}
 			heap.Push(&cm.Queue, chunk)
 			if !tickerActive {
-				ticker.Reset(5 * time.Millisecond)
+				ticker.Reset(SKIP_TIME)
 				tickerActive = true
 				// log.Println("Start Ticker", order, cm.Queue[0].Idx, len(cm.Queue))
 			}
 
 		case <-ticker.C:
 			if len(cm.Queue) > 0 {
-				//log.Println("Flush", order, len(cm.Queue))
+				/*cp := make([]int, len(cm.Queue))
+				for i, c := range cm.Queue {
+					cp[i] = int(c.Idx)
+				}
+				sort.Ints(cp)
+				old := order*/
+
 				order = cm.sendQueue(ctx, cm.Queue[0].Idx)
-				/*log.Println("Flushed", order, len(cm.Queue))
-				for _, c := range cm.Queue {
-					log.Println("       -", c.Idx)
-				}*/
+				//log.Println("Skip", old, order, cp, len(cm.Queue))
 			}
 
 		case <-ctx.Done():
@@ -290,30 +308,33 @@ func (cm *ConnManager) startSorter(ctx context.Context) {
 func (cm *ConnManager) changeWeights(addr net.Addr, weight int) {
 	key := toKey(addr)
 	if c, ok := cm.Channels[key]; ok {
-		log.Println("set Weight", addr, weight)
-		c.sendWeight = int((weight * MTU) / 100)
+		c.sendWeight = weight
+		// log.Println("set Weight", addr, weight, c.sendWeight)
+	}
+
+	cm.minWeight = 100
+	for _, c := range cm.Channels {
+		if cm.minWeight > c.sendWeight && c.sendWeight > 0 {
+			cm.minWeight = c.sendWeight
+		}
 	}
 }
 
 func (cm *ConnManager) AllocChunk() *Chunk {
-	if len(cm.ChunkSupply) > 0 {
-		cm.mu.Lock()
-		defer cm.mu.Unlock()
-		if len(cm.ChunkSupply) > 0 {
-			result := cm.ChunkSupply[len(cm.ChunkSupply)-1]
-			cm.ChunkSupply = cm.ChunkSupply[:len(cm.ChunkSupply)-1]
-			return result
-		}
-	}
 	return &Chunk{
 		Size: 0,
 	}
+	/*
+		if len(cm.ChunkSupply) == 0 {
+			return &Chunk{
+				Size: 0,
+			}
+		}
+		return <-cm.ChunkSupply*/
 }
 
 func (cm *ConnManager) FreeChunk(chunk *Chunk) {
-	cm.mu.Lock()
-	cm.ChunkSupply = append(cm.ChunkSupply, chunk)
-	cm.mu.Unlock()
+	// cm.ChunkSupply <- chunk
 }
 
 func (cm *ConnManager) AddChannel(id uint16, addr net.Addr, conn WriteConnection) {
@@ -321,12 +342,12 @@ func (cm *ConnManager) AddChannel(id uint16, addr net.Addr, conn WriteConnection
 	chl := &channel{
 		id:            id,
 		signal:        signal,
-		SendChl:       make(chan Message),
+		SendChl:       make(chan Message, 1000),
 		addr:          addr,
 		sendCount:     0,
 		receiveCount:  0,
 		receiveWeight: 0,
-		sendWeight:    MTU,
+		sendWeight:    100,
 	}
 	key := toKey(addr)
 	{
@@ -401,7 +422,7 @@ func (cm *ConnManager) GotPong(addr net.Addr) {
 			c.signal <- true
 		}
 		if c.sendWeight == 0 {
-			c.sendWeight = MTU
+			c.sendWeight = 100
 		}
 	}
 }

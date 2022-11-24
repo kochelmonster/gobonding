@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	"golang.org/x/net/ipv4"
 )
@@ -61,6 +62,14 @@ func (c *Chunk) Write(cm *ConnManager, conn WriteConnection) int {
 }
 
 func (c *Chunk) Action(cm *ConnManager, conn WriteConnection) {
+	d := time.Since(cm.rtick)
+	if d < cm.minRtick {
+		cm.minRtick = d
+	}
+	if d > cm.maxRtick {
+		cm.maxRtick = d
+	}
+
 	cm.CollectChannel <- c
 }
 
