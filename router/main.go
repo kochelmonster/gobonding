@@ -14,37 +14,15 @@ import (
 	"github.com/kochelmonster/gobonding"
 )
 
-type ConnectionDispatcher struct {
-	conns map[string]*net.UDPConn
-}
-
-func (c *ConnectionDispatcher) WriteTo(b []byte, addr net.Addr) (int, error) {
-	if conn, ok := c.conns[addr.String()]; ok {
-		return conn.Write(b)
-	}
-	return 0, nil
-}
-
-type ReadWrapper struct {
-	conn *net.UDPConn
-}
-
-func (c *ReadWrapper) ReadFrom(b []byte) (int, net.Addr, error) {
-	size, _, err := c.conn.ReadFrom(b)
-	return size, c.conn.LocalAddr(), err
-}
-
-func createChannels(ctx context.Context, cm *gobonding.ConnManager, config *gobonding.Config) {
-	conn := ConnectionDispatcher{conns: map[string]*net.UDPConn{}}
-
+func createChannels(cm *gobonding.ConnManager) {
 	i := uint16(0)
-	for link, proxy := range config.Channels {
+	for link, proxy := range cm.Config.Channels {
 		laddr, err := gobonding.ToIP(link)
 		if err != nil {
 			panic(err)
 		}
 
-		serverAddr := fmt.Sprintf("%v:%v", proxy, config.ProxyPort)
+		serverAddr := fmt.Sprintf("%v:%v", proxy, cm.Config.ProxyStartPort+int(i))
 		raddr, err := net.ResolveUDPAddr("udp", serverAddr)
 		if err != nil {
 			log.Println("Cannot Resolve address", serverAddr, err)
@@ -55,30 +33,9 @@ func createChannels(ctx context.Context, cm *gobonding.ConnManager, config *gobo
 		if err != nil {
 			panic(err)
 		}
-		addr := udpConn.LocalAddr()
-		conn.conns[addr.String()] = udpConn
-		cm.AddChannel(i, addr, &conn)
-		i++
 
-		go func() {
-			log.Println("Initial PingPong")
-			cm.PingPong(addr, &conn)
-			log.Println("Initial PingPong done")
-		}()
-
-		go func() {
-			wrapper := ReadWrapper{conn: udpConn}
-			for {
-				msg, err := gobonding.ReadMessage(&wrapper, cm)
-				if err != nil {
-					return
-				}
-				//log.Println("Received", addr, msg)
-				msg.Action(cm, &conn)
-			}
-		}()
+		gobonding.NewChannel(cm, i, udpConn).Ping().Ping().Start()
 	}
-	// go cm.SendPings(ctx, &conn)
 }
 
 func main() {
@@ -104,12 +61,11 @@ func main() {
 	// start routes changes in config monitoring
 	log.Println("Interface parameters configured", iface)
 
-	cm := gobonding.NewConnMananger(config)
+	cm := gobonding.NewConnMananger(ctx, config)
 
-	createChannels(ctx, cm, config)
-	cm.Start(ctx)
-	go gobonding.WriteToIface(ctx, iface, cm)
-	go gobonding.ReadFromIface(ctx, iface, cm)
+	createChannels(cm)
+	go cm.Receiver(iface)
+	go cm.Sender(iface)
 
 	exitChan := make(chan os.Signal, 1)
 	signal.Notify(exitChan, syscall.SIGTERM)

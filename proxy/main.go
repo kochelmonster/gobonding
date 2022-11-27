@@ -14,25 +14,17 @@ import (
 	"github.com/kochelmonster/gobonding"
 )
 
-func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gobonding.Config) {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: nil, Port: config.ProxyPort})
-	if err != nil {
-		panic(err)
-	}
-	log.Println("UDP Server started", conn.LocalAddr())
-
-	go func() {
-		<-ctx.Done()
-		conn.Close()
-	}()
-	for {
-		msg, err := gobonding.ReadMessage(conn, cm)
+func createChannels(cm *gobonding.ConnManager) {
+	for i := uint16(0); i < uint16(len(cm.Config.Channels)); i++ {
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{
+			IP: nil, Port: cm.Config.ProxyStartPort + int(i)})
 		if err != nil {
-			return
+			panic(err)
 		}
-		// log.Println("Received", msg)
-		msg.Action(cm, conn)
+		log.Println("UDP Server started", conn.LocalAddr())
+		gobonding.NewChannel(cm, i, conn)
 	}
+	// go cm.SendPings(ctx, &conn)
 }
 
 func main() {
@@ -54,11 +46,11 @@ func main() {
 
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
-	cm := gobonding.NewConnMananger(config).Start(ctx)
+	cm := gobonding.NewConnMananger(ctx, config).Start()
 
-	go startDispatcher(ctx, cm, config)
-	go gobonding.WriteToIface(ctx, iface, cm)
-	go gobonding.ReadFromIface(ctx, iface, cm)
+	createChannels(cm)
+	go cm.Receiver(iface)
+	go cm.Sender(iface)
 
 	exitChan := make(chan os.Signal, 1)
 	signal.Notify(exitChan, syscall.SIGTERM)

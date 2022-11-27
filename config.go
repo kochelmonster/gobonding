@@ -20,8 +20,8 @@ type Config struct {
 	// Hearbeat period to test udp connection
 	HeartBeatTime string
 
-	// The Port the proxy is listening to
-	ProxyPort int
+	// The start Port the proxy is listening to
+	ProxyStartPort int
 	// A map ifacename or ipaddress of the wan device to ip address of proxy server
 	Channels map[string]string
 	// Certificate of quic Connection

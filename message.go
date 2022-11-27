@@ -3,181 +3,108 @@ package gobonding
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
-	"net"
-	"time"
 
 	"golang.org/x/net/ipv4"
 )
 
 const (
-	MTU = 1450
+	MTU = 1500
 
 	// BSIZE is size of buffer to receive packets
 	// (little bit bigger than maximum)
 	BUFFERSIZE = 1718
 )
 
-type WriteConnection interface {
-	WriteTo(b []byte, addr net.Addr) (int, error)
-}
-
-type ReadConnection interface {
-	ReadFrom(b []byte) (int, net.Addr, error)
-}
-
 type Message interface {
-	Write(cm *ConnManager, conn WriteConnection) int
-	Action(cm *ConnManager, conn WriteConnection)
-	RouterAddr() net.Addr
-	SetRouterAddr(addr net.Addr)
+	Buffer() []byte
 	String() string
 }
 
-type MsgBase struct {
-	Addr net.Addr
-}
-
-func (m *MsgBase) SetRouterAddr(addr net.Addr) {
-	m.Addr = addr
-}
-
-func (m *MsgBase) RouterAddr() net.Addr {
-	return m.Addr
-}
-
 type Chunk struct {
-	MsgBase
 	Data [BUFFERSIZE + 2]byte
 	Size uint16
-	Idx  uint16
 }
 
-func (c *Chunk) Write(cm *ConnManager, conn WriteConnection) int {
+func (msg *Chunk) Buffer() []byte {
 	// log.Println("Send", c.Addr)
-	binary.BigEndian.PutUint16(c.Data[:2], c.Idx)
-	size, _ := conn.WriteTo(c.Data[:c.Size+2], c.Addr)
-	cm.FreeChunk(c)
-	return size
+	return msg.Data[:msg.Size]
 }
 
-func (c *Chunk) Action(cm *ConnManager, conn WriteConnection) {
-	d := time.Since(cm.rtick)
-	if d < cm.minRtick {
-		cm.minRtick = d
-	}
-	if d > cm.maxRtick {
-		cm.maxRtick = d
-	}
-
-	cm.CollectChannel <- c
-}
-
-func (c *Chunk) String() string {
-	header, err := ipv4.ParseHeader(c.Data[2:])
+func (msg *Chunk) String() string {
+	header, err := ipv4.ParseHeader(msg.Data[0:])
 	if err != nil {
 		return "Error parsing buffer"
 	} else {
-		return fmt.Sprintf("Packet %v(%v): %v", c.Idx, c.Size, header)
+		return fmt.Sprintf("Packet %v: %v", msg.Size, header)
 	}
 }
 
 type PongMsg struct {
-	MsgBase
-	Id uint16
 }
 
-func (m *PongMsg) Write(cm *ConnManager, conn WriteConnection) int {
-	buffer := []byte{0, 0, 0, 'o', 0, 0}
-	binary.BigEndian.PutUint16(buffer[4:], m.Id)
-	conn.WriteTo(buffer, m.Addr)
-	return 0
+func (msg *PongMsg) Buffer() []byte {
+	return []byte{0, 'o'}
 }
 
-func (m *PongMsg) Action(cm *ConnManager, conn WriteConnection) {
-	cm.GotPong(m.Addr)
-}
-
-func (m *PongMsg) String() string {
-	return fmt.Sprintf("Pong: %v %v", m.Id, m.Addr)
+func (msg *PongMsg) String() string {
+	return "Pong"
 }
 
 type PingMsg struct {
-	MsgBase
-	Id uint16
 }
 
-func (m *PingMsg) Write(cm *ConnManager, conn WriteConnection) int {
-	buffer := []byte{0, 0, 0, 'i', 0, 0}
-	binary.BigEndian.PutUint16(buffer[4:], m.Id)
-	conn.WriteTo(buffer, m.Addr)
-	return 0
+func (msg *PingMsg) Buffer() []byte {
+	return []byte{0, 'i'}
 }
 
-func (m *PingMsg) Action(cm *ConnManager, conn WriteConnection) {
-	cm.SendPong(m.Id, m.Addr, conn)
+func (msg *PingMsg) String() string {
+	return "Ping"
 }
 
-func (m *PingMsg) String() string {
-	return fmt.Sprintf("Ping: %v %v", m.Id, m.Addr)
+type SpeedMsg struct {
+	Speed uint64
 }
 
-type WeightMsg struct {
-	MsgBase
-	Weight uint16
+func (msg *SpeedMsg) Buffer() []byte {
+	buffer := []byte{0, 's', 0, 0, 0, 0, 0, 0, 0, 0}
+	binary.BigEndian.PutUint64(buffer[2:], msg.Speed)
+	return buffer
 }
 
-func (m *WeightMsg) Write(cm *ConnManager, conn WriteConnection) int {
-	buffer := []byte{0, 0, 0, 'w', 0, 0}
-	binary.BigEndian.PutUint16(buffer[4:], m.Weight)
-	conn.WriteTo(buffer, m.Addr)
-	return 0
+func (msg *SpeedMsg) String() string {
+	return fmt.Sprintf("Speed: %v", msg.Speed)
 }
 
-func (m *WeightMsg) Action(cm *ConnManager, conn WriteConnection) {
-	cm.changeWeights(m.Addr, int(m.Weight))
-}
+type Wrapped uint16
 
-func (m *WeightMsg) String() string {
-	return fmt.Sprintf("Weight: %v %v", m.Weight, m.Addr)
-}
-
-func ReadMessage(conn ReadConnection, cm *ConnManager) (Message, error) {
-	chunk := cm.AllocChunk()
-	size, addr, err := conn.ReadFrom(chunk.Data[0:])
-	if err != nil {
-		cm.FreeChunk(chunk)
-		return nil, err
+func (msg Wrapped) Less(other Wrapped) bool {
+	if msg < 0x1000 && other > 0xf000 {
+		// Overflow case
+		return false
 	}
-	chunk.Addr = addr
-
-	if chunk.Data[2] == 0 { // the ip header first byte
-		id := binary.BigEndian.Uint16(chunk.Data[4:6])
-		cm.FreeChunk(chunk)
-
-		switch chunk.Data[3] {
-		case 'o':
-			return &PongMsg{
-				MsgBase: MsgBase{Addr: addr},
-				Id:      id,
-			}, nil
-		case 'i':
-			return &PingMsg{
-				MsgBase: MsgBase{Addr: addr},
-				Id:      id,
-			}, nil
-		case 'w':
-			return &WeightMsg{
-				MsgBase: MsgBase{Addr: addr},
-				Weight:  id,
-			}, nil
-		}
-		// not an IP Packet -> Control Message
-		log.Println("control message")
+	if other < 0x1000 && msg > 0xf000 {
+		// Overflow case
+		return true
 	}
+	return msg < other
+}
 
-	chunk.Size = uint16(size) - 2
-	chunk.Idx = binary.BigEndian.Uint16(chunk.Data[:2])
-	cm.ReceivedChunk(addr, chunk)
-	return chunk, nil
+type ChangeMsg struct {
+	NextChannelId uint16
+	Age           Wrapped
+}
+
+func (m *ChangeMsg) Buffer() []byte {
+	buffer := []byte{0, 'c', 0, 0, 0, 0}
+	binary.BigEndian.PutUint16(buffer[2:4], m.NextChannelId)
+	binary.BigEndian.PutUint16(buffer[4:6], uint16(m.Age))
+	return buffer
+}
+
+func (msg *ChangeMsg) String() string {
+	return fmt.Sprintf("ChangeChannel: %v", msg.NextChannelId)
+}
+
+func ChangeChannel(channel uint16, age Wrapped) *ChangeMsg {
+	return &ChangeMsg{NextChannelId: channel, Age: age}
 }

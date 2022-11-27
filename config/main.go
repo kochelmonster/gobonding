@@ -104,13 +104,13 @@ func WriteConfigFile(parentDir, proxy string, devs map[string]string) {
 
 	keyPEM, certPEM := generateTLSConfig()
 	config := gobonding.Config{
-		TunName:     "tun0",
-		MonitorPath: "/var/lib/gobonding/monitor.yml",
-		MonitorTick: "5s",
-		ProxyPort:   41414,
-		Channels:    channels,
-		PrivateKey:  string(keyPEM),
-		Certificate: string(certPEM),
+		TunName:        "tun0",
+		MonitorPath:    "/var/lib/gobonding/monitor.yml",
+		MonitorTick:    "5s",
+		ProxyStartPort: 41414,
+		Channels:       channels,
+		PrivateKey:     string(keyPEM),
+		Certificate:    string(certPEM),
 	}
 
 	text, err := yaml.Marshal(config)

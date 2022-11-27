@@ -4,8 +4,6 @@
 package gobonding
 
 import (
-	"context"
-	"io"
 	"log"
 
 	"github.com/songgao/water"
@@ -35,46 +33,4 @@ func IfaceSetup(name string) *water.Interface {
 	}
 
 	return iface
-}
-
-func ReadFromIface(ctx context.Context, iface *water.Interface, cm *ConnManager) {
-	order := uint16(0)
-	for {
-		chunk := cm.AllocChunk()
-		size, err := iface.Read(chunk.Data[2:])
-		switch err {
-		case io.EOF:
-			return
-		case nil:
-		default:
-			log.Println("Error reading packet", err)
-		}
-		chunk.Size = uint16(size)
-		chunk.Idx = order
-		order++
-
-		select {
-		case cm.DispatchChannel <- chunk:
-
-		case <-ctx.Done():
-			cm.FreeChunk(chunk)
-			return
-		}
-	}
-}
-
-func WriteToIface(ctx context.Context, iface *water.Interface, cm *ConnManager) {
-	for {
-		select {
-		case chunk := <-cm.OrderedChannel:
-			_, err := iface.Write(chunk.Data[2 : chunk.Size+2])
-			if err != nil {
-				log.Println("Error writing packet", err)
-			}
-			cm.FreeChunk(chunk)
-
-		case <-ctx.Done():
-			return
-		}
-	}
 }

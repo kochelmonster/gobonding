@@ -1,455 +1,211 @@
 package gobonding
 
 import (
-	"container/heap"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
-	"math"
 	"net"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
+
+	"github.com/songgao/water"
 )
 
 const (
 	// AppVersion contains current application version for -version command flag
-	AppVersion = "0.1.0"
-
-	monitorTemplate = `download_speed: %[1]vBPS
-upload_speed: %[2]vBPS
-max_download_speed: %[3]vBPS
-max_upload_speed: %[4]vBPS
-active_channels:
-%[5]v
-`
+	AppVersion = "0.2.0"
 )
 
 /*
 Dispatches Chunks to Channels
 */
 type ConnManager struct {
-	mu sync.Mutex
-
-	// Dispatches chunks on Proxy Channels
-	DispatchChannel chan *Chunk
-
-	// Receives chunk of Proxy Channels
-	CollectChannel chan *Chunk
-
-	// Outputs ordered chunks
-	OrderedChannel chan *Chunk
-	Queue          PriorityQueue
-
 	ChunkSupply chan *Chunk
+	Channels    []*Channel
+	Config      *Config
 
-	Channels map[string]*channel
+	needSignal bool
+	signal     chan bool
+	heartbeat  time.Duration
 
-	UploadBytes   int
-	DownloadBytes int
-
-	rcount    int
-	minWeight int
-	heartbeat time.Duration
-	config    *Config
-
-	minRtick time.Duration
-	maxRtick time.Duration
-	rtick    time.Time
+	ctx context.Context
 }
 
-type channel struct {
-	id            uint16
-	signal        chan bool
-	SendChl       chan Message
-	addr          net.Addr
-	sendCount     int
-	receiveCount  int
-	receiveWeight int
-	sendWeight    int
-}
-
-func NewConnMananger(config *Config) *ConnManager {
+func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 	heartbeat, err := time.ParseDuration(config.HeartBeatTime)
 	if err != nil {
 		heartbeat = 20 * time.Second
 	}
 
-	result := &ConnManager{
-		DispatchChannel: make(chan *Chunk, 1000),
-		CollectChannel:  make(chan *Chunk, 100),
-		OrderedChannel:  make(chan *Chunk, 100),
-		Queue:           NewQueue(),
-		ChunkSupply:     make(chan *Chunk, 2000),
-		Channels:        make(map[string]*channel),
-		UploadBytes:     0,
-		DownloadBytes:   0,
-		rcount:          0,
-		heartbeat:       heartbeat,
-		config:          config,
-		minWeight:       100,
-
-		minRtick: 100 * time.Second,
-		maxRtick: time.Duration(0),
-		rtick:    time.Now(),
+	return &ConnManager{
+		ChunkSupply: make(chan *Chunk, 2000),
+		Channels:    make([]*Channel, len(config.Channels)),
+		Config:      config,
+		needSignal:  false,
+		signal:      make(chan bool),
+		heartbeat:   heartbeat,
+		ctx:         ctx,
 	}
-
-	return result
-}
-
-func (cm *ConnManager) Start(ctx context.Context) *ConnManager {
-	go cm.startBalancer(ctx)
-	go cm.startDispatcher(ctx)
-	go cm.startSorter(ctx)
-
-	if cm.config.MonitorPath != "" {
-		go cm.startMonitor(ctx, cm.config)
-	}
-	return cm
 }
 
 func (cm *ConnManager) Close() {
 	for _, c := range cm.Channels {
-		close(c.signal)
+		c.conn.Close()
 	}
-	close(cm.DispatchChannel)
 }
 
-func (cm *ConnManager) startDispatcher(ctx context.Context) {
-	for {
-		for _, c := range cm.Channels {
-			amount := 0
-			// limit := (c.sendWeight * MTU) / cm.minWeight
-			limit := MTU * 10
-			// log.Println("send to", c.addr, limit)
-			for amount < limit {
-				select {
-				case chunk := <-cm.DispatchChannel:
-					c.SendChl <- chunk
-					amount += int(chunk.Size)
+func (cm *ConnManager) Start() *ConnManager {
+	if cm.Config.MonitorPath != "" {
+		go cm.startMonitor()
+	}
+	return cm
+}
 
-				case <-ctx.Done():
-					return
-				}
+func (cm *ConnManager) Sender(iface *water.Interface) {
+	active := cm.selectChannel(0)
+	chunk := Chunk{}
+	changeId := Wrapped(1)
+
+	for {
+		chl := cm.Channels[active]
+		limit := cm.calcSendLimit(active)
+
+		sendBytes := 0
+		for {
+			size, err := iface.Read(chunk.Data[0:])
+			switch err {
+			case io.EOF:
+				return
+			case nil:
+			default:
+				log.Println("Error reading packet", err)
+				continue
+			}
+			sendBytes += size
+			chunk.Size = uint16(size)
+			chl.Send(&chunk)
+
+			if sendBytes <= limit {
+				active := cm.selectChannel(active)
+				chl.Send(ChangeChannel(uint16(active), changeId))
+				chl.Send(ChangeChannel(uint16(active), changeId))
+				changeId++
+				break
 			}
 		}
 	}
 }
 
-func (cm *ConnManager) startMonitor(ctx context.Context, config *Config) {
-	period, err := time.ParseDuration(config.MonitorTick)
+func (cm *ConnManager) startMonitor() {
+	period, err := time.ParseDuration(cm.Config.MonitorTick)
 	if err != nil {
 		period = 20 * time.Second
 	}
 
-	dirPath := filepath.Dir(config.MonitorPath)
+	dirPath := filepath.Dir(cm.Config.MonitorPath)
 	err = os.MkdirAll(dirPath, os.ModePerm)
 	if err == nil {
-		ts := time.Now()
-		maxDSpeed := float64(0)
-		maxUSpeed := float64(0)
-
 		// Write Monitor File
 		for {
 			select {
 			case <-time.After(period):
-				duration := float64(time.Since(ts) / time.Second)
-				dSpeed := float64(cm.DownloadBytes) / duration
-				uSpeed := float64(cm.UploadBytes) / duration
-
-				maxDSpeed = math.Max(dSpeed, maxDSpeed)
-				maxUSpeed = math.Max(uSpeed, maxUSpeed)
-
-				cm.DownloadBytes = 0
-				cm.UploadBytes = 0
-				ts = time.Now()
-
 				channels := ""
-				for id, chl := range cm.Channels {
-					channels += fmt.Sprintf("  - %v(%v/%v)\n",
-						id, chl.sendCount, chl.receiveCount)
+				for _, chl := range cm.Channels {
+					channels += fmt.Sprintf("  - %v:\n    Send: %v\n    %v\n",
+						chl.Id, chl.SendSpeed, chl.ReceiveSpeed)
 				}
 
-				log.Println("Ticks", cm.minRtick, cm.maxRtick)
-				/*
-					text := fmt.Sprintf(monitorTemplate, int(dSpeed), int(uSpeed), int(maxDSpeed),
-						int(maxUSpeed), channels)
-
-					os.WriteFile(config.MonitorPath, []byte(text), 0666)*/
+				os.WriteFile(cm.Config.MonitorPath, []byte(channels), 0666)
 
 				// write
-			case <-ctx.Done():
+			case <-cm.ctx.Done():
 				return
 			}
 		}
 	}
 }
 
-func (cm *ConnManager) sendFirst(ctx context.Context) uint16 {
-	chunk := heap.Pop(&cm.Queue).(*Chunk)
-	select {
-	case cm.OrderedChannel <- chunk:
-		return chunk.Idx + 1
-	case <-ctx.Done():
-		return 0
-	}
-}
-
-func (cm *ConnManager) sendQueue(ctx context.Context, order uint16) uint16 {
-	for len(cm.Queue) > 0 {
-		if ctx.Err() != nil {
-			return order
-		}
-
-		peek := cm.Queue[0]
-		switch {
-		case peek.Idx <= order:
-			order = cm.sendFirst(ctx)
-
-		default: // peek.Idx > order
-			return order
-		}
-	}
-	return order
-}
-
-func (cm *ConnManager) startBalancer(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
+func (cm *ConnManager) selectChannel(active int) int {
+	size := len(cm.Channels)
 	for {
+		for j := 0; j < size; j++ {
+			active++
+			if active >= size {
+				active = 0
+			}
+			chl := cm.Channels[active]
+			if chl.Active() {
+				return active
+			}
+		}
+
+		cm.needSignal = true
 		select {
-		case <-ticker.C:
-			if cm.rcount > 100 && false {
-				sum := 0
-				for _, c := range cm.Channels {
-					sum += int(c.receiveWeight)
-				}
-
-				log.Println("Balancer", sum)
-				for _, c := range cm.Channels {
-					weight := uint16(int(c.receiveWeight*100) / sum)
-					if c.receiveWeight != 0 && weight == 0 {
-						weight = 1
-					}
-					log.Println("Send Weight", c.addr, c.receiveWeight, weight)
-					c.SendChl <- &WeightMsg{
-						MsgBase: MsgBase{Addr: c.addr},
-						Weight:  weight,
-					}
-					c.receiveWeight = 0
-				}
-			}
-			cm.rcount = 0
-
-		case <-ctx.Done():
-			return
+		case <-cm.signal:
+		case <-cm.ctx.Done():
 		}
-	}
-
-}
-
-func (cm *ConnManager) startSorter(ctx context.Context) {
-	// Sorts chunks that came not in order
-	ticker := time.NewTicker(time.Second)
-	ticker.Stop()
-	tickerActive := false
-	order := uint16(0)
-	const SKIP_TIME = 800 * time.Millisecond
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		if tickerActive && len(cm.Queue) == 0 {
-			ticker.Stop()
-			tickerActive = false
-		}
-
-		select {
-		case chunk := <-cm.CollectChannel:
-			//log.Println("Received unordered", chunk.Idx, order)
-			if chunk.Idx == order {
-				cm.OrderedChannel <- chunk
-				order++
-				if len(cm.Queue) > 0 {
-					order = cm.sendQueue(ctx, order)
-					if tickerActive && len(cm.Queue) > 0 {
-						ticker.Reset(SKIP_TIME)
-					}
-				}
-				continue
-			}
-			heap.Push(&cm.Queue, chunk)
-			if !tickerActive {
-				ticker.Reset(SKIP_TIME)
-				tickerActive = true
-				// log.Println("Start Ticker", order, cm.Queue[0].Idx, len(cm.Queue))
-			}
-
-		case <-ticker.C:
-			if len(cm.Queue) > 0 {
-				/*cp := make([]int, len(cm.Queue))
-				for i, c := range cm.Queue {
-					cp[i] = int(c.Idx)
-				}
-				sort.Ints(cp)
-				old := order*/
-
-				order = cm.sendQueue(ctx, cm.Queue[0].Idx)
-				//log.Println("Skip", old, order, cp, len(cm.Queue))
-			}
-
-		case <-ctx.Done():
-			return
+		for len(cm.signal) > 0 {
+			<-cm.signal
 		}
 	}
 }
 
-func (cm *ConnManager) changeWeights(addr net.Addr, weight int) {
-	key := toKey(addr)
-	if c, ok := cm.Channels[key]; ok {
-		c.sendWeight = weight
-		// log.Println("set Weight", addr, weight, c.sendWeight)
-	}
-
-	cm.minWeight = 100
+func (cm *ConnManager) calcSendLimit(active int) int {
+	speedSum := uint64(0)
 	for _, c := range cm.Channels {
-		if cm.minWeight > c.sendWeight && c.sendWeight > 0 {
-			cm.minWeight = c.sendWeight
+		speedSum += c.SendSpeed
+	}
+	return int(cm.Channels[active].SendSpeed * uint64(len(cm.Channels)) * MTU /
+		speedSum)
+}
+
+func (cm *ConnManager) Receiver(iface *water.Interface) {
+	timer := time.NewTimer(time.Second)
+	active := cm.selectChannel(0)
+	lastAge := Wrapped(0)
+	for {
+		chl := cm.Channels[active]
+		timer.Stop()
+		timer.Reset(time.Second)
+		select {
+		case msg := <-chl.ReceiveChl:
+			switch msg := msg.(type) {
+			case *Chunk:
+				_, err := iface.Write(msg.Data[:msg.Size])
+				if err != nil {
+					log.Println("Error writing packet", err)
+				}
+				cm.FreeChunk(msg)
+
+			case *ChangeMsg:
+				if msg.Age == lastAge || msg.Age.Less(lastAge) {
+					continue
+				}
+				lastAge = msg.Age
+				active = int(msg.NextChannelId)
+			}
+		case <-timer.C:
+			if !chl.Active() {
+				active = cm.selectChannel(active)
+			}
 		}
 	}
 }
 
 func (cm *ConnManager) AllocChunk() *Chunk {
-	return &Chunk{
-		Size: 0,
-	}
-	/*
-		if len(cm.ChunkSupply) == 0 {
-			return &Chunk{
-				Size: 0,
-			}
+	if len(cm.ChunkSupply) == 0 {
+		return &Chunk{
+			Size: 0,
 		}
-		return <-cm.ChunkSupply*/
+	}
+	return <-cm.ChunkSupply
 }
 
 func (cm *ConnManager) FreeChunk(chunk *Chunk) {
-	// cm.ChunkSupply <- chunk
-}
-
-func (cm *ConnManager) AddChannel(id uint16, addr net.Addr, conn WriteConnection) {
-	signal := make(chan bool, 1)
-	chl := &channel{
-		id:            id,
-		signal:        signal,
-		SendChl:       make(chan Message, 1000),
-		addr:          addr,
-		sendCount:     0,
-		receiveCount:  0,
-		receiveWeight: 0,
-		sendWeight:    100,
-	}
-	key := toKey(addr)
-	{
-		cm.mu.Lock()
-		defer cm.mu.Unlock()
-		cm.Channels[key] = chl
-	}
-	log.Println("AddChannel", key)
-
-	go func() {
-		for {
-			timer := time.NewTimer(cm.heartbeat)
-			select {
-			case msg, more := <-chl.SendChl:
-				if !more {
-					return
-				}
-
-				msg.SetRouterAddr(chl.addr) // addr port can change after reconnect
-				// log.Println("Send", addr, sendCount, chunk)
-				size := msg.Write(cm, conn)
-				if size > 0 {
-					cm.UploadBytes += size
-					chl.sendCount++
-				}
-			case <-timer.C:
-				cm.pingPong(chl, conn)
-			}
-		}
-	}()
-}
-
-func (cm *ConnManager) SendPing(id uint16, addr net.Addr, conn WriteConnection) {
-	(&PingMsg{
-		MsgBase: MsgBase{addr},
-		Id:      id,
-	}).Write(cm, conn)
-}
-
-func (cm *ConnManager) PingPong(addr net.Addr, conn WriteConnection) bool {
-	key := toKey(addr)
-	if c, ok := cm.Channels[key]; ok {
-		return cm.pingPong(c, conn)
-	}
-	return false
-}
-
-func (cm *ConnManager) pingPong(c *channel, conn WriteConnection) bool {
-	//log.Println("PingPong", c.addr)
-	cm.SendPing(c.id, c.addr, conn)
-
-	ticker := time.NewTicker(time.Second)
-	for i := 0; i < 10; i++ {
-		select {
-		case _, more := <-c.signal:
-			return more
-		case <-ticker.C:
-			log.Println("ResendPing", c.addr)
-			cm.SendPing(c.id, c.addr, conn)
-		}
-	}
-	log.Println("Disconnected")
-	c.sendWeight = 0
-	return true
-}
-
-func (cm *ConnManager) GotPong(addr net.Addr) {
-	key := toKey(addr)
-	if c, ok := cm.Channels[key]; ok {
-		if len(c.signal) == 0 {
-			// log.Println("GotAck", addr)
-			c.signal <- true
-		}
-		if c.sendWeight == 0 {
-			c.sendWeight = 100
-		}
-	}
-}
-
-func (cm *ConnManager) ReceivedChunk(addr net.Addr, chunk *Chunk) {
-	key := toKey(addr)
-	if c, ok := cm.Channels[key]; ok {
-		c.receiveCount++
-		c.receiveWeight += int(chunk.Size)
-	}
-	cm.rcount += 1
-	cm.DownloadBytes += int(chunk.Size)
-}
-
-func (cm *ConnManager) SendPong(id uint16, addr net.Addr, conn WriteConnection) {
-	// log.Println("SendAck", addr)
-	key := toKey(addr)
-	if c, ok := cm.Channels[key]; ok {
-		c.addr = addr
-	} else {
-		cm.AddChannel(id, addr, conn)
-	}
-
-	(&PongMsg{
-		MsgBase: MsgBase{addr},
-		Id:      id,
-	}).Write(cm, conn)
+	cm.ChunkSupply <- chunk
 }
 
 /*
@@ -475,8 +231,4 @@ func ToIP(address string) (net.IP, error) {
 		return nil, errors.New("network device has not ip4 address")
 	}
 	return ip, nil
-}
-
-func toKey(addr net.Addr) string {
-	return addr.(*net.UDPAddr).IP.String()
 }
