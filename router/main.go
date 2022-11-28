@@ -14,6 +14,25 @@ import (
 	"github.com/kochelmonster/gobonding"
 )
 
+type RouterIO struct {
+	conn *net.UDPConn
+}
+
+func (io *RouterIO) Write(buffer []byte) {
+	_, err := io.conn.Write(buffer)
+	if err != nil {
+		log.Println("error sending", err, io.conn)
+	}
+}
+
+func (io *RouterIO) Read(buffer []byte) (int, error) {
+	return io.conn.Read(buffer)
+}
+
+func (io *RouterIO) Close() {
+	io.conn.Close()
+}
+
 func createChannels(cm *gobonding.ConnManager) {
 	i := uint16(0)
 	for link, proxy := range cm.Config.Channels {
@@ -34,7 +53,8 @@ func createChannels(cm *gobonding.ConnManager) {
 			panic(err)
 		}
 
-		gobonding.NewChannel(cm, i, udpConn).Ping().Ping().Start()
+		gobonding.NewChannel(cm, i, &RouterIO{udpConn}).Ping().Ping().Start()
+		i++
 	}
 }
 

@@ -14,6 +14,30 @@ import (
 	"github.com/kochelmonster/gobonding"
 )
 
+type ProxyIO struct {
+	conn *net.UDPConn
+	addr net.Addr
+}
+
+func (io *ProxyIO) Write(buffer []byte) {
+	if io.addr != nil {
+		_, err := io.conn.WriteTo(buffer, io.addr)
+		if err != nil {
+			log.Println("error sending", err, io.conn)
+		}
+	}
+}
+
+func (io *ProxyIO) Read(buffer []byte) (int, error) {
+	size, addr, err := io.conn.ReadFrom(buffer)
+	io.addr = addr
+	return size, err
+}
+
+func (io *ProxyIO) Close() {
+	io.conn.Close()
+}
+
 func createChannels(cm *gobonding.ConnManager) {
 	for i := uint16(0); i < uint16(len(cm.Config.Channels)); i++ {
 		conn, err := net.ListenUDP("udp", &net.UDPAddr{
@@ -22,7 +46,7 @@ func createChannels(cm *gobonding.ConnManager) {
 			panic(err)
 		}
 		log.Println("UDP Server started", conn.LocalAddr())
-		gobonding.NewChannel(cm, i, conn)
+		gobonding.NewChannel(cm, i, &ProxyIO{conn, nil}).Start()
 	}
 	// go cm.SendPings(ctx, &conn)
 }

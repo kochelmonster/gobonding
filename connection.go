@@ -53,7 +53,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 
 func (cm *ConnManager) Close() {
 	for _, c := range cm.Channels {
-		c.conn.Close()
+		c.io.Close()
 	}
 }
 
@@ -72,6 +72,7 @@ func (cm *ConnManager) Sender(iface *water.Interface) {
 	for {
 		chl := cm.Channels[active]
 		limit := cm.calcSendLimit(active)
+		log.Println("Active Sender", active, limit)
 
 		sendBytes := 0
 		for {
@@ -185,6 +186,7 @@ func (cm *ConnManager) Receiver(iface *water.Interface) {
 					continue
 				}
 				lastAge = msg.Age
+				log.Println("Active Receiver", active)
 				active = int(msg.NextChannelId)
 			}
 		case <-timer.C:

@@ -3,29 +3,34 @@ package gobonding
 import (
 	"encoding/binary"
 	"log"
-	"net"
 	"time"
 )
+
+type ChannelIO interface {
+	Write(buffer []byte)
+	Read(buffer []byte) (int, error)
+	Close()
+}
 
 type Channel struct {
 	Id            uint16
 	ReceiveChl    chan Message
-	conn          *net.UDPConn
+	io            ChannelIO
 	cm            *ConnManager
 	lastHeartbeat time.Time
 	ReceiveSpeed  uint64 // bytes per second
 	SendSpeed     uint64 // bytes per second
 }
 
-func NewChannel(cm *ConnManager, id uint16, conn *net.UDPConn) *Channel {
+func NewChannel(cm *ConnManager, id uint16, io ChannelIO) *Channel {
 	chl := &Channel{
 		Id:            id,
 		ReceiveChl:    make(chan Message, 100),
-		conn:          conn,
+		io:            io,
 		cm:            cm,
 		lastHeartbeat: time.Time{},
-		SendSpeed:     0,
 		ReceiveSpeed:  0,
+		SendSpeed:     0,
 	}
 	cm.Channels[id] = chl
 	return chl
@@ -42,7 +47,7 @@ func (chl *Channel) Start() *Channel {
 }
 
 func (chl *Channel) Send(msg Message) {
-	chl.conn.Write(msg.Buffer())
+	chl.io.Write(msg.Buffer())
 }
 
 func (chl *Channel) Ping() *Channel {
@@ -70,16 +75,17 @@ func (chl *Channel) receiver() {
 	received := 0
 
 	var msg Message = nil
-
+	log.Println("start receiver", chl.io)
 	for {
 		chunk := chl.cm.AllocChunk()
 
-		size, _, err := chl.conn.ReadFrom(chunk.Data[0:])
+		size, err := chl.io.Read(chunk.Data[0:])
 		if err != nil {
 			chl.cm.FreeChunk(chunk)
 			log.Println("Error reading from connection", chl, err)
 			return
 		}
+		log.Println("received", chunk.Data[:size])
 
 		if chl.cm.needSignal && len(chl.cm.signal) == 0 {
 			chl.cm.signal <- true
@@ -92,7 +98,7 @@ func (chl *Channel) receiver() {
 			lastTime = chl.lastHeartbeat
 			chl.ReceiveSpeed = uint64(received) * uint64(time.Second) /
 				uint64(duration)
-			chl.conn.Write((&SpeedMsg{Speed: chl.ReceiveSpeed}).Buffer())
+			chl.io.Write((&SpeedMsg{Speed: chl.ReceiveSpeed}).Buffer())
 		}
 
 		if chunk.Data[0] == 0 { // the ip header first byte
@@ -103,7 +109,7 @@ func (chl *Channel) receiver() {
 			case 'o':
 				continue
 			case 'i':
-				chl.conn.Write((&PongMsg{}).Buffer())
+				chl.io.Write((&PongMsg{}).Buffer())
 				continue
 			case 's':
 				chl.SendSpeed = binary.BigEndian.Uint64(chunk.Data[2:10])
