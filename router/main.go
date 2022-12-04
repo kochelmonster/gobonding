@@ -18,19 +18,20 @@ type RouterIO struct {
 	conn *net.UDPConn
 }
 
-func (io *RouterIO) Write(buffer []byte) {
+func (io *RouterIO) Write(buffer []byte) (int, error) {
 	_, err := io.conn.Write(buffer)
 	if err != nil {
 		log.Println("error sending", err, io.conn)
 	}
+	return len(buffer), nil
 }
 
 func (io *RouterIO) Read(buffer []byte) (int, error) {
 	return io.conn.Read(buffer)
 }
 
-func (io *RouterIO) Close() {
-	io.conn.Close()
+func (io *RouterIO) Close() error {
+	return io.conn.Close()
 }
 
 func createChannels(cm *gobonding.ConnManager) {
@@ -53,7 +54,7 @@ func createChannels(cm *gobonding.ConnManager) {
 			panic(err)
 		}
 
-		gobonding.NewChannel(cm, i, &RouterIO{udpConn}).Ping().Ping().Start()
+		gobonding.NewChannel(cm, i, &RouterIO{udpConn}).Start()
 		i++
 	}
 }

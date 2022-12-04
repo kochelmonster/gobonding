@@ -31,6 +31,7 @@ func (msg *Chunk) Buffer() []byte {
 }
 
 func (msg *Chunk) String() string {
+	//return fmt.Sprintf("Chunk %v", msg.Size)
 	header, err := ipv4.ParseHeader(msg.Data[0:])
 	if err != nil {
 		return "Error parsing buffer"

@@ -7,15 +7,15 @@ import (
 )
 
 type ChannelIO interface {
-	Write(buffer []byte)
+	Write(buffer []byte) (int, error)
 	Read(buffer []byte) (int, error)
-	Close()
+	Close() error
 }
 
 type Channel struct {
 	Id            uint16
 	ReceiveChl    chan Message
-	io            ChannelIO
+	Io            ChannelIO
 	cm            *ConnManager
 	lastHeartbeat time.Time
 	ReceiveSpeed  uint64 // bytes per second
@@ -26,7 +26,7 @@ func NewChannel(cm *ConnManager, id uint16, io ChannelIO) *Channel {
 	chl := &Channel{
 		Id:            id,
 		ReceiveChl:    make(chan Message, 100),
-		io:            io,
+		Io:            io,
 		cm:            cm,
 		lastHeartbeat: time.Time{},
 		ReceiveSpeed:  0,
@@ -47,7 +47,8 @@ func (chl *Channel) Start() *Channel {
 }
 
 func (chl *Channel) Send(msg Message) {
-	chl.io.Write(msg.Buffer())
+	// log.Println("Send", chl.Id, msg)
+	chl.Io.Write(msg.Buffer())
 }
 
 func (chl *Channel) Ping() *Channel {
@@ -56,49 +57,55 @@ func (chl *Channel) Ping() *Channel {
 }
 
 func (chl *Channel) pinger() {
-	ticker := time.NewTicker(chl.cm.heartbeat)
+	ticker := time.NewTicker(chl.cm.heartbeat * 2 / 3)
 	for {
 		select {
 		case <-ticker.C:
-			if !chl.Active() {
-				chl.Ping()
-			}
+			chl.Ping()
 
 		case <-chl.cm.ctx.Done():
+			log.Println("Stop Pinger", chl.Id)
 			return
 		}
 	}
 }
 
 func (chl *Channel) receiver() {
+	defer log.Println("done receiver", chl.Id)
+
 	lastTime := time.Now()
 	received := 0
 
 	var msg Message = nil
-	log.Println("start receiver", chl.io)
+	chl.cm.Log("start channel receiver %v\n", chl.Id)
+	chl.Ping().Ping()
 	for {
 		chunk := chl.cm.AllocChunk()
 
-		size, err := chl.io.Read(chunk.Data[0:])
+		size, err := chl.Io.Read(chunk.Data[0:])
 		if err != nil {
 			chl.cm.FreeChunk(chunk)
-			log.Println("Error reading from connection", chl, err)
+			chl.cm.Log("Error reading from connection %v %v", chl.Id, err)
 			return
 		}
-		log.Println("received", chunk.Data[:size])
 
-		if chl.cm.needSignal && len(chl.cm.signal) == 0 {
-			chl.cm.signal <- true
-			chl.cm.needSignal = false
+		// chl.cm.Log("receive from channel %v: %v %v\n", chl.Id, size, chunk.Data[:4])
+
+		if !chl.cm.active {
+			active := chl.cm.setActive()
+			chl.cm.Log("reactivate channel %v %v\n", chl.Id, active)
 		}
 
 		received += size
 		chl.lastHeartbeat = time.Now()
 		if duration := time.Since(lastTime); duration >= time.Second {
 			lastTime = chl.lastHeartbeat
-			chl.ReceiveSpeed = uint64(received) * uint64(time.Second) /
-				uint64(duration)
-			chl.io.Write((&SpeedMsg{Speed: chl.ReceiveSpeed}).Buffer())
+			speed := uint64(received) * uint64(time.Second) / uint64(duration)
+			if speed > 128*1024/8 { // 128kbps
+				chl.cm.Log("Send ReceiveSpeed %v\n", speed)
+				chl.ReceiveSpeed = speed
+				chl.Io.Write((&SpeedMsg{Speed: chl.ReceiveSpeed}).Buffer())
+			}
 		}
 
 		if chunk.Data[0] == 0 { // the ip header first byte
@@ -109,7 +116,8 @@ func (chl *Channel) receiver() {
 			case 'o':
 				continue
 			case 'i':
-				chl.io.Write((&PongMsg{}).Buffer())
+				chl.Io.Write((&PongMsg{}).Buffer())
+				chl.Io.Write((&PongMsg{}).Buffer())
 				continue
 			case 's':
 				chl.SendSpeed = binary.BigEndian.Uint64(chunk.Data[2:10])
@@ -124,9 +132,11 @@ func (chl *Channel) receiver() {
 			msg = chunk
 		}
 
+		// chl.cm.Log("receive from channel %v %v: %v\n", chl.Id, size, msg)
 		select {
 		case chl.ReceiveChl <- msg:
 		case <-chl.cm.ctx.Done():
+			log.Println("Stop Receiver", chl.Id)
 		}
 	}
 }

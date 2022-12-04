@@ -19,13 +19,14 @@ type ProxyIO struct {
 	addr net.Addr
 }
 
-func (io *ProxyIO) Write(buffer []byte) {
+func (io *ProxyIO) Write(buffer []byte) (int, error) {
 	if io.addr != nil {
 		_, err := io.conn.WriteTo(buffer, io.addr)
 		if err != nil {
 			log.Println("error sending", err, io.conn)
 		}
 	}
+	return len(buffer), nil
 }
 
 func (io *ProxyIO) Read(buffer []byte) (int, error) {
@@ -34,8 +35,8 @@ func (io *ProxyIO) Read(buffer []byte) (int, error) {
 	return size, err
 }
 
-func (io *ProxyIO) Close() {
-	io.conn.Close()
+func (io *ProxyIO) Close() error {
+	return io.conn.Close()
 }
 
 func createChannels(cm *gobonding.ConnManager) {

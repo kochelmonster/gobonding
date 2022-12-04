@@ -9,9 +9,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
-
-	"github.com/songgao/water"
 )
 
 const (
@@ -27,11 +26,14 @@ type ConnManager struct {
 	Channels    []*Channel
 	Config      *Config
 
-	needSignal bool
-	signal     chan bool
-	heartbeat  time.Duration
+	activeCond *sync.Cond
+	// true if at least one channel is active
+	active bool
 
-	ctx context.Context
+	heartbeat time.Duration
+
+	ctx    context.Context
+	Logger func(format string, v ...any)
 }
 
 func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
@@ -44,17 +46,30 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		ChunkSupply: make(chan *Chunk, 2000),
 		Channels:    make([]*Channel, len(config.Channels)),
 		Config:      config,
-		needSignal:  false,
-		signal:      make(chan bool),
+		activeCond:  sync.NewCond(&sync.Mutex{}),
+		active:      false,
 		heartbeat:   heartbeat,
 		ctx:         ctx,
+		Logger: func(format string, v ...any) {
+			log.Printf(format, v...)
+		},
 	}
 }
 
 func (cm *ConnManager) Close() {
 	for _, c := range cm.Channels {
-		c.io.Close()
+		c.Io.Close()
 	}
+	cm.setActive()
+}
+
+func (cm *ConnManager) setActive() bool {
+	cm.activeCond.L.Lock()
+	defer cm.activeCond.L.Unlock()
+	before := cm.active
+	cm.active = true
+	cm.activeCond.Broadcast()
+	return before
 }
 
 func (cm *ConnManager) Start() *ConnManager {
@@ -62,42 +77,6 @@ func (cm *ConnManager) Start() *ConnManager {
 		go cm.startMonitor()
 	}
 	return cm
-}
-
-func (cm *ConnManager) Sender(iface *water.Interface) {
-	active := cm.selectChannel(0)
-	chunk := Chunk{}
-	changeId := Wrapped(1)
-
-	for {
-		chl := cm.Channels[active]
-		limit := cm.calcSendLimit(active)
-		log.Println("Active Sender", active, limit)
-
-		sendBytes := 0
-		for {
-			size, err := iface.Read(chunk.Data[0:])
-			switch err {
-			case io.EOF:
-				return
-			case nil:
-			default:
-				log.Println("Error reading packet", err)
-				continue
-			}
-			sendBytes += size
-			chunk.Size = uint16(size)
-			chl.Send(&chunk)
-
-			if sendBytes <= limit {
-				active := cm.selectChannel(active)
-				chl.Send(ChangeChannel(uint16(active), changeId))
-				chl.Send(ChangeChannel(uint16(active), changeId))
-				changeId++
-				break
-			}
-		}
-	}
 }
 
 func (cm *ConnManager) startMonitor() {
@@ -121,7 +100,6 @@ func (cm *ConnManager) startMonitor() {
 
 				os.WriteFile(cm.Config.MonitorPath, []byte(channels), 0666)
 
-				// write
 			case <-cm.ctx.Done():
 				return
 			}
@@ -129,8 +107,9 @@ func (cm *ConnManager) startMonitor() {
 	}
 }
 
-func (cm *ConnManager) selectChannel(active int) int {
+func (cm *ConnManager) selectChannel(active int) (int, bool) {
 	size := len(cm.Channels)
+	activated := false
 	for {
 		for j := 0; j < size; j++ {
 			active++
@@ -139,18 +118,25 @@ func (cm *ConnManager) selectChannel(active int) int {
 			}
 			chl := cm.Channels[active]
 			if chl.Active() {
-				return active
+				return active, activated
 			}
 		}
 
-		cm.needSignal = true
-		select {
-		case <-cm.signal:
-		case <-cm.ctx.Done():
+		cm.Log("No active sender -> wait for signal\n")
+		cm.activeCond.L.Lock()
+		if cm.ctx.Err() != nil {
+			return 0, activated
 		}
-		for len(cm.signal) > 0 {
-			<-cm.signal
+		cm.active = false
+		defer cm.activeCond.L.Unlock()
+		for !cm.active {
+			cm.activeCond.Wait()
+			if cm.ctx.Err() != nil {
+				return 0, activated
+			}
+			activated = true
 		}
+		cm.Log("Sender activated\n")
 	}
 }
 
@@ -159,15 +145,81 @@ func (cm *ConnManager) calcSendLimit(active int) int {
 	for _, c := range cm.Channels {
 		speedSum += c.SendSpeed
 	}
-	return int(cm.Channels[active].SendSpeed * uint64(len(cm.Channels)) * MTU /
-		speedSum)
+
+	if speedSum == 0 {
+		return MTU
+	}
+	sumMTU := uint64(len(cm.Channels) * MTU)
+	return int(cm.Channels[active].SendSpeed * sumMTU / speedSum)
 }
 
-func (cm *ConnManager) Receiver(iface *water.Interface) {
-	timer := time.NewTimer(time.Second)
-	active := cm.selectChannel(0)
-	lastAge := Wrapped(0)
+func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
+	defer cm.Log("done connection sender\n")
+
+	cm.Log("Start sender\n")
+	chunk := Chunk{}
+
+	var activated bool
+	cm.Log("Send Start Channel")
+	active, _ := cm.selectChannel(0)
+	age := Wrapped(0)
+
+	sendchange := func() {
+		cm.Log("SendChannelChange %v(%v)", active, age)
+		for _, chl := range cm.Channels {
+			chl.Send(ChangeChannel(uint16(active), age))
+		}
+		age++
+	}
+
+	sendchange()
+
+	cm.Log("Start sender loop %v\n", active)
 	for {
+		chl := cm.Channels[active]
+		limit := cm.calcSendLimit(active)
+		cm.Log("Active Sender %v %v %v\n", active, limit, MTU)
+
+		sendBytes := 0
+		for {
+			size, err := iface.Read(chunk.Data[0:])
+			switch err {
+			case io.EOF:
+				return
+			case nil:
+			default:
+				cm.Log("Error reading packet %v\n", err)
+				continue
+			}
+			sendBytes += size
+			chunk.Size = uint16(size)
+			cm.Log("Iface Read  %v %v %v %v\n", chl.Id, sendBytes, limit, size)
+			chl.Send(&chunk)
+
+			if sendBytes >= limit {
+				cm.Log("Send Limit exceeded %v >= %v", sendBytes, limit)
+				active, activated = cm.selectChannel(active)
+				if activated {
+					age = 0
+				}
+				sendchange()
+				sendBytes = 0
+				break
+			}
+		}
+	}
+}
+
+func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
+	defer cm.Log("done connection receiver\n")
+
+	timer := time.NewTimer(time.Second)
+	active, _ := cm.selectChannel(0)
+	lastAge := Wrapped(0)
+	var activated bool
+	cm.Log("Start receive %v\n", active)
+	for {
+		cm.Log("Active Receiver %v\n", active)
 		chl := cm.Channels[active]
 		timer.Stop()
 		timer.Reset(time.Second)
@@ -175,24 +227,47 @@ func (cm *ConnManager) Receiver(iface *water.Interface) {
 		case msg := <-chl.ReceiveChl:
 			switch msg := msg.(type) {
 			case *Chunk:
+				cm.Log("Iface Write %v %v %v\n", chl.Id, msg.Size, msg)
 				_, err := iface.Write(msg.Data[:msg.Size])
 				if err != nil {
-					log.Println("Error writing packet", err)
+					cm.Log("Error writing packet %v\n", err)
 				}
 				cm.FreeChunk(msg)
 
 			case *ChangeMsg:
+				cm.Log("Received change Message %v -> %v at (%v %v)\n",
+					active, msg.NextChannelId, msg.Age, lastAge)
+
 				if msg.Age == lastAge || msg.Age.Less(lastAge) {
 					continue
 				}
 				lastAge = msg.Age
-				log.Println("Active Receiver", active)
 				active = int(msg.NextChannelId)
 			}
 		case <-timer.C:
 			if !chl.Active() {
-				active = cm.selectChannel(active)
+				cm.Log("Receiver not active")
+				active, activated = cm.selectChannel(active)
+				if activated {
+					lastAge = Wrapped(0)
+				}
+			} else {
+				size := len(cm.Channels)
+				test := active
+				for j := 0; j < size; j++ {
+					test++
+					if test >= size {
+						test = 0
+					}
+					if len(cm.Channels[test].ReceiveChl) > 0 {
+						cm.Log("Change Active Recveiver chanel %v -> %v", active, test)
+						active = test
+						break
+					}
+				}
 			}
+		case <-cm.ctx.Done():
+			return
 		}
 	}
 }
@@ -208,6 +283,10 @@ func (cm *ConnManager) AllocChunk() *Chunk {
 
 func (cm *ConnManager) FreeChunk(chunk *Chunk) {
 	cm.ChunkSupply <- chunk
+}
+
+func (cm *ConnManager) Log(format string, v ...any) {
+	cm.Logger(format, v...)
 }
 
 /*
