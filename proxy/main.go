@@ -46,6 +46,7 @@ func createChannels(cm *gobonding.ConnManager) {
 		if err != nil {
 			panic(err)
 		}
+		conn.SetReadBuffer(gobonding.SOCKET_BUFFER)
 		log.Println("UDP Server started", conn.LocalAddr())
 		gobonding.NewChannel(cm, i, &ProxyIO{conn, nil}).Start()
 	}

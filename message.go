@@ -3,8 +3,6 @@ package gobonding
 import (
 	"encoding/binary"
 	"fmt"
-
-	"golang.org/x/net/ipv4"
 )
 
 const (
@@ -13,6 +11,8 @@ const (
 	// BSIZE is size of buffer to receive packets
 	// (little bit bigger than maximum)
 	BUFFERSIZE = 1718
+
+	SOCKET_BUFFER = 1024 * 1024
 )
 
 type Message interface {
@@ -31,13 +31,14 @@ func (msg *Chunk) Buffer() []byte {
 }
 
 func (msg *Chunk) String() string {
-	//return fmt.Sprintf("Chunk %v", msg.Size)
-	header, err := ipv4.ParseHeader(msg.Data[0:])
-	if err != nil {
-		return "Error parsing buffer"
-	} else {
-		return fmt.Sprintf("Packet %v: %v", msg.Size, header)
-	}
+	return fmt.Sprintf("Chunk %v", msg.Size)
+	/*
+		header, err := ipv4.ParseHeader(msg.Data[0:])
+		if err != nil {
+			return "Error parsing buffer"
+		} else {
+			return fmt.Sprintf("Packet %v: %v", msg.Size, header)
+		}*/
 }
 
 type PongMsg struct {
@@ -76,36 +77,46 @@ func (msg *SpeedMsg) String() string {
 	return fmt.Sprintf("Speed: %v", msg.Speed)
 }
 
-type Wrapped uint16
-
-func (msg Wrapped) Less(other Wrapped) bool {
-	if msg < 0x1000 && other > 0xf000 {
-		// Overflow case
-		return false
-	}
-	if other < 0x1000 && msg > 0xf000 {
-		// Overflow case
-		return true
-	}
-	return msg < other
+type StartBlockMsg struct {
+	Age Wrapped
 }
 
-type ChangeMsg struct {
-	NextChannelId uint16
-	Age           Wrapped
-}
-
-func (m *ChangeMsg) Buffer() []byte {
-	buffer := []byte{0, 'c', 0, 0, 0, 0}
-	binary.BigEndian.PutUint16(buffer[2:4], m.NextChannelId)
-	binary.BigEndian.PutUint16(buffer[4:6], uint16(m.Age))
+func (m *StartBlockMsg) Buffer() []byte {
+	buffer := []byte{0, 'b', 0, 0}
+	binary.BigEndian.PutUint16(buffer[2:4], uint16(m.Age))
 	return buffer
 }
 
-func (msg *ChangeMsg) String() string {
-	return fmt.Sprintf("ChangeChannel: %v", msg.NextChannelId)
+func (msg *StartBlockMsg) String() string {
+	return fmt.Sprintf("StartBlock: %v", msg.Age)
 }
 
-func ChangeChannel(channel uint16, age Wrapped) *ChangeMsg {
-	return &ChangeMsg{NextChannelId: channel, Age: age}
+func StartBlock(age Wrapped) *StartBlockMsg {
+	return &StartBlockMsg{Age: age}
+}
+
+// A wrapped counter
+type Wrapped uint16
+
+func (wrp Wrapped) Less(other Wrapped) bool {
+	if wrp < 0x1000 && other > 0xf000 {
+		// Overflow case
+		return false
+	}
+	if other < 0x1000 && wrp > 0xf000 {
+		// Overflow case
+		return true
+	}
+
+	if other == 0 && wrp != 0 {
+		return true
+	}
+	return wrp < other && wrp != 0
+}
+
+func (wrp *Wrapped) Inc() {
+	(*wrp)++
+	if *wrp == 0 {
+		*wrp++
+	}
 }

@@ -3,8 +3,10 @@ package gobonding_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +16,32 @@ import (
 func createConnManager(ctx context.Context) *gobonding.ConnManager {
 	config := gobonding.Config{}
 	return gobonding.NewConnMananger(ctx, &config)
+}
+
+func TestWrapped(t *testing.T) {
+	a := gobonding.Wrapped(0)
+	b := gobonding.Wrapped(1)
+
+	if a.Less(b) {
+		t.Fatalf("0 is always greater")
+	}
+
+	if !b.Less(a) {
+		t.Fatalf("0 is always greater")
+	}
+
+	c := gobonding.Wrapped(0xFFFF)
+	if !c.Less(b) {
+		t.Fatalf("wrong wrapped less")
+	}
+	if b.Less(c) {
+		t.Fatalf("wrong wrapped less")
+	}
+
+	(&c).Inc()
+	if c != 1 {
+		t.Fatalf("wrong inc")
+	}
 }
 
 func TestAllocAndFree(t *testing.T) {
@@ -97,11 +125,26 @@ func (cm *RouterCM) Log(format string, v ...any) {
 	log.Printf("router: "+format, v...)
 }
 
+func waitForChannels(cm *gobonding.ConnManager) {
+	for i := 0; i < 10; i++ {
+		active := 0
+		for _, chl := range cm.Channels {
+			if chl.Active() {
+				active += 1
+			}
+		}
+		if active == len(cm.Channels) {
+			return
+		}
+		time.Sleep(50 * time.Microsecond)
+	}
+}
+
 func TestCommunication(t *testing.T) {
-	const TIMEOUT = 3 * time.Second
+	const TIMEOUT = 5 * time.Second
 
 	config := &gobonding.Config{
-		HeartBeatTime:  "100ms",
+		HeartBeatTime:  "1s",
 		ProxyStartPort: 41414,
 		Channels:       map[string]string{"1": "1", "2": "2"},
 	}
@@ -115,13 +158,20 @@ func TestCommunication(t *testing.T) {
 		ctx:    ctx,
 	}
 
-	pr1 := make(chan []byte, 4)
-	rp1 := make(chan []byte, 4)
-	pr2 := make(chan []byte, 4)
-	rp2 := make(chan []byte, 4)
+	pr1 := make(chan []byte, 400)
+	rp1 := make(chan []byte, 400)
+	pr2 := make(chan []byte, 400)
+	rp2 := make(chan []byte, 400)
 
 	proxy := gobonding.NewConnMananger(ctx, config)
 	proxy.Logger = func(format string, v ...any) {
+		r := fmt.Sprintf(format, v...)
+		switch {
+		case strings.HasPrefix(r, "++Receive 0") == true:
+			return
+		case strings.HasPrefix(r, "--Receive 0") == true:
+			return
+		}
 		log.Printf("proxy: "+format, v...)
 	}
 	gobonding.NewChannel(proxy, 0, &MockReader{pr1, rp1, false, ctx}).Start()
@@ -139,6 +189,13 @@ func TestCommunication(t *testing.T) {
 	}
 	router := gobonding.NewConnMananger(ctx, config)
 	router.Logger = func(format string, v ...any) {
+		switch {
+		case strings.HasPrefix(format, "++Receive") == true:
+			return
+		case strings.HasPrefix(format, "--Receive") == true:
+			return
+		}
+
 		log.Printf("router 1: "+format, v...)
 	}
 	rc1 := gobonding.NewChannel(router, 0, &MockReader{rp1, pr1, false, rctx}).Start()
@@ -146,6 +203,10 @@ func TestCommunication(t *testing.T) {
 	go router.Receiver(&ioRouter)
 	go router.Sender(&ioRouter)
 
+	waitForChannels(router)
+	waitForChannels(proxy)
+
+	log.Println("Send Test")
 	ioRouter.Input <- []byte("Test")
 
 	select {
@@ -154,6 +215,7 @@ func TestCommunication(t *testing.T) {
 			t.Fatalf("Wrong Firstmessage")
 		}
 	case <-time.After(TIMEOUT):
+		log.Println("Timeout")
 		t.Fatalf("Timeout")
 	}
 
@@ -173,6 +235,7 @@ func TestCommunication(t *testing.T) {
 				t.Fatalf("Wrong message %v", i)
 			}
 		case <-time.After(TIMEOUT):
+			log.Println("Timeout")
 			t.Fatalf("Timeout")
 		}
 	}
@@ -199,7 +262,11 @@ func TestCommunication(t *testing.T) {
 	go router.Receiver(&ioRouter)
 	go router.Sender(&ioRouter)
 
+	waitForChannels(router)
+	waitForChannels(proxy)
+
 	log.Println("Synchronized new Router")
+	log.Println("=======================")
 	buffer[0] = 1
 	buffer[1] = byte(1)
 	ioRouter.Input <- buffer
@@ -209,6 +276,7 @@ func TestCommunication(t *testing.T) {
 			t.Fatalf("Wrong synched message")
 		}
 	case <-time.After(TIMEOUT):
+		log.Println("Timeout")
 		t.Fatalf("Timeout")
 	}
 
@@ -216,4 +284,5 @@ func TestCommunication(t *testing.T) {
 	cancel()
 	router.Close()
 	proxy.Close()
+	time.Sleep(1)
 }
