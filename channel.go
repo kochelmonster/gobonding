@@ -109,7 +109,7 @@ func (chl *Channel) receiver() {
 			lastTime = chl.lastHeartbeat
 			speed := uint64(received) * uint64(time.Second) / uint64(duration)
 			if speed > 128*1024/8 { // 128kbps
-				chl.cm.Log("Send ReceiveSpeed %v %v\n", chl.Id, speed)
+				// chl.cm.Log("Send ReceiveSpeed %v %v\n", chl.Id, speed)
 				chl.ReceiveSpeed = speed
 				chl.Io.Write((&SpeedMsg{Speed: chl.ReceiveSpeed}).Buffer())
 			}
@@ -129,7 +129,7 @@ func (chl *Channel) receiver() {
 				continue
 			case 's':
 				chl.SendSpeed = binary.BigEndian.Uint64(chunk.Data[2:10])
-				chl.cm.Log("Update Sendspeed %v %v", chl.Id, chl.SendSpeed)
+				// chl.cm.Log("Update Sendspeed %v %v", chl.Id, chl.SendSpeed)
 				continue
 			case 'b':
 				sb := StartBlock(Wrapped(binary.BigEndian.Uint16(chunk.Data[2:4])))
@@ -138,12 +138,6 @@ func (chl *Channel) receiver() {
 					continue
 				}
 				lastAge = sb.Age
-				if sb.Age == 0 {
-					// chl.cm.Log("Received Stop block %v", chl.Id)
-					chl.Age = sb.Age
-					chl.cm.newStartBlock(chl)
-					continue
-				}
 				msg = sb
 			}
 		} else {
@@ -169,9 +163,9 @@ func (chl *Channel) transmitter() {
 		case msg := <-chl.transmitChl:
 			switch msg := msg.(type) {
 			case *StartBlockMsg:
-				// chl.cm.Log("Received Startblock %v %v -> %v\n", chl.Id, chl.Age, msg.Age)
+				chl.cm.Log("received Startblock %v %v -> %v\n", chl.Id, chl.Age, msg.Age)
 				chl.Age = msg.Age
-				if chl.cm.newStartBlock(chl) {
+				if chl.cm.handleBlockMsg(chl) && msg.Age != 0 {
 					select {
 					case <-chl.startSignal:
 					case <-chl.cm.ctx.Done():
@@ -181,6 +175,7 @@ func (chl *Channel) transmitter() {
 				}
 
 			case *Chunk:
+				chl.cm.Log("received chunk %v %v\n", chl.Id, msg)
 				select {
 				case chl.cm.receiveChunks <- msg:
 				case <-chl.cm.ctx.Done():

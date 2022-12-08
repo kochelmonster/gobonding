@@ -95,7 +95,7 @@ func (cm *ConnManager) startMonitor() {
 	}
 }
 
-func (cm *ConnManager) newStartBlock(chl *Channel) bool {
+func (cm *ConnManager) handleBlockMsg(chl *Channel) bool {
 	oldestChl := cm.Channels[0]
 	for _, chl := range cm.Channels[1:] {
 		if chl.Age.Less(oldestChl.Age) {
@@ -109,11 +109,13 @@ func (cm *ConnManager) newStartBlock(chl *Channel) bool {
 	}
 
 	if cm.activeReceiver != chl.Id {
-		select {
-		case oldestChl.startSignal <- true:
-			return true
-		case <-cm.ctx.Done():
-		}
+		go func() {
+			select {
+			case oldestChl.startSignal <- true:
+			case <-cm.ctx.Done():
+			}
+		}()
+		return true
 	}
 	return false
 }
@@ -175,8 +177,7 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 				}
 				sendBytes += size
 
-				// cm.Log("Transfer chunk  %v %v %v %v\n", chl.Id, size, sendBytes, limit)
-				size = 0
+				cm.Log("Send chunk  %v %v %v %v\n", chl.Id, size, sendBytes, limit)
 				chl.Send(&chunk)
 				if sendBytes > limit {
 					// cm.Log("Send Stopblock %v", chl.Id)
@@ -186,6 +187,7 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 					sendBytes = 0
 					active = winc(active)
 				}
+				size = 0
 				break
 			}
 			sendBytes = 0
