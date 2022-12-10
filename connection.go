@@ -35,7 +35,6 @@ type ConnManager struct {
 	lastReceiveAge Wrapped
 
 	receiveChunks chan *Chunk
-	heartbeat     time.Duration
 	ctx           context.Context
 	Logger        func(format string, v ...any)
 }
