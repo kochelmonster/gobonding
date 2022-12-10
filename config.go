@@ -17,8 +17,6 @@ type Config struct {
 	MonitorPath string
 	// The Tick interval to update the monitor file
 	MonitorTick string
-	// Hearbeat period to test udp connection
-	HeartBeatTime string
 
 	// The start Port the proxy is listening to
 	ProxyStartPort int

@@ -45,7 +45,9 @@ type PongMsg struct {
 }
 
 func (msg *PongMsg) Buffer() []byte {
-	return []byte{0, 'o'}
+	buffer := make([]byte, MTU)
+	buffer[1] = 'o'
+	return buffer
 }
 
 func (msg *PongMsg) String() string {
@@ -56,25 +58,13 @@ type PingMsg struct {
 }
 
 func (msg *PingMsg) Buffer() []byte {
-	return []byte{0, 'i'}
+	buffer := make([]byte, MTU)
+	buffer[1] = 'i'
+	return buffer
 }
 
 func (msg *PingMsg) String() string {
 	return "Ping"
-}
-
-type SpeedMsg struct {
-	Speed uint64
-}
-
-func (msg *SpeedMsg) Buffer() []byte {
-	buffer := []byte{0, 's', 0, 0, 0, 0, 0, 0, 0, 0}
-	binary.BigEndian.PutUint64(buffer[2:], msg.Speed)
-	return buffer
-}
-
-func (msg *SpeedMsg) String() string {
-	return fmt.Sprintf("Speed: %v", msg.Speed)
 }
 
 type StartBlockMsg struct {
@@ -114,9 +104,10 @@ func (wrp Wrapped) Less(other Wrapped) bool {
 	return wrp < other && wrp != 0
 }
 
-func (wrp *Wrapped) Inc() {
-	(*wrp)++
-	if *wrp == 0 {
-		*wrp++
+func (wrp Wrapped) Inc() Wrapped {
+	(wrp)++
+	if wrp == 0 {
+		wrp++
 	}
+	return wrp
 }

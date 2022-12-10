@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+const (
+	MIN_SPEED = 128 * 1024 / 8 // 128kbps
+)
+
 type ChannelIO interface {
 	Write(buffer []byte) (int, error)
 	Read(buffer []byte) (int, error)
@@ -19,24 +23,28 @@ type Channel struct {
 	Age Wrapped
 
 	startSignal   chan bool
+	waitForSignal bool
+
 	transmitChl   chan Message
 	cm            *ConnManager
 	lastHeartbeat time.Time
-	ReceiveSpeed  uint64 // bytes per second
-	SendSpeed     uint64 // bytes per second
+	lastPing      time.Time
+
+	TransmissionTime time.Duration // bytes per second
 }
 
 func NewChannel(cm *ConnManager, id uint16, io ChannelIO) *Channel {
 	chl := &Channel{
-		Id:            id,
-		Io:            io,
-		Age:           Wrapped(0),
-		startSignal:   make(chan bool),
-		transmitChl:   make(chan Message, 500),
-		cm:            cm,
-		lastHeartbeat: time.Time{},
-		ReceiveSpeed:  0,
-		SendSpeed:     0,
+		Id:               id,
+		Io:               io,
+		Age:              Wrapped(0),
+		startSignal:      make(chan bool),
+		waitForSignal:    false,
+		transmitChl:      make(chan Message, 500),
+		cm:               cm,
+		lastHeartbeat:    time.Time{},
+		lastPing:         time.Time{},
+		TransmissionTime: time.Second,
 	}
 	cm.Channels[id] = chl
 	return chl
@@ -47,7 +55,7 @@ func (chl *Channel) String() string {
 }
 
 func (chl *Channel) Active() bool {
-	return time.Since(chl.lastHeartbeat) < chl.cm.heartbeat
+	return time.Since(chl.lastHeartbeat) < 4*time.Second
 }
 
 func (chl *Channel) Start() *Channel {
@@ -63,12 +71,13 @@ func (chl *Channel) Send(msg Message) {
 }
 
 func (chl *Channel) Ping() *Channel {
+	chl.lastPing = time.Now()
 	chl.Send(&PingMsg{})
 	return chl
 }
 
 func (chl *Channel) pinger() {
-	ticker := time.NewTicker(chl.cm.heartbeat * 2 / 3)
+	ticker := time.NewTicker(2 * time.Second)
 	for {
 		select {
 		case <-ticker.C:
@@ -86,12 +95,11 @@ func (chl *Channel) receiver() {
 	defer chl.cm.Log("Stop receiver %v\n", chl.Id)
 
 	var msg Message
-	lastTime := time.Now()
 	received := 0
 
 	lastAge := Wrapped(0)
 	chl.cm.Log("start channel receiver %v\n", chl.Id)
-	chl.Ping().Ping()
+	chl.Ping()
 	for {
 		chunk := chl.cm.AllocChunk()
 
@@ -105,15 +113,6 @@ func (chl *Channel) receiver() {
 
 		received += size
 		chl.lastHeartbeat = time.Now()
-		if duration := time.Since(lastTime); duration >= time.Second {
-			lastTime = chl.lastHeartbeat
-			speed := uint64(received) * uint64(time.Second) / uint64(duration)
-			if speed > 128*1024/8 { // 128kbps
-				// chl.cm.Log("Send ReceiveSpeed %v %v\n", chl.Id, speed)
-				chl.ReceiveSpeed = speed
-				chl.Io.Write((&SpeedMsg{Speed: chl.ReceiveSpeed}).Buffer())
-			}
-		}
 
 		if chunk.Data[0] == 0 { // the ip header first byte
 			// not an IP Packet -> Control Message
@@ -121,15 +120,10 @@ func (chl *Channel) receiver() {
 
 			switch chunk.Data[1] {
 			case 'o':
-				// do nothing
+				chl.TransmissionTime = time.Since(chl.lastPing) / 2
 				continue
 			case 'i':
 				chl.Io.Write((&PongMsg{}).Buffer())
-				chl.Io.Write((&PongMsg{}).Buffer())
-				continue
-			case 's':
-				chl.SendSpeed = binary.BigEndian.Uint64(chunk.Data[2:10])
-				// chl.cm.Log("Update Sendspeed %v %v", chl.Id, chl.SendSpeed)
 				continue
 			case 'b':
 				sb := StartBlock(Wrapped(binary.BigEndian.Uint16(chunk.Data[2:4])))
@@ -158,24 +152,32 @@ func (chl *Channel) transmitter() {
 	defer chl.cm.Log("Stop transmitter %v\n", chl.Id)
 
 	chl.cm.Log("start channel transmitter %v\n", chl.Id)
+	count := 0
+	bytes := 0
 	for {
 		select {
 		case msg := <-chl.transmitChl:
 			switch msg := msg.(type) {
 			case *StartBlockMsg:
-				chl.cm.Log("received Startblock %v %v -> %v\n", chl.Id, chl.Age, msg.Age)
+				if msg.Age == 0 {
+					//chl.cm.Log("received StopBlock %v(%v): %v(%v)\n", chl.Id, chl.Age, count, bytes)
+				} else {
+					//chl.cm.Log("received Startblock %v(%v)\n", chl.Id, msg.Age)
+					count = 0
+					bytes = 0
+				}
 				chl.Age = msg.Age
-				if chl.cm.handleBlockMsg(chl) && msg.Age != 0 {
-					select {
-					case <-chl.startSignal:
-					case <-chl.cm.ctx.Done():
-						log.Println("Stop Transmitter", chl.Id)
-						return
-					}
+				chl.cm.handleBlockMsg(chl)
+				if msg.Age != 0 {
+					chl.cm.waitForActivation(chl)
+					// chl.cm.Log("receive start block %v(%v) %v b/s\n", chl.Id, chl.Age, chl.ReceiveSpeed)
 				}
 
 			case *Chunk:
-				chl.cm.Log("received chunk %v %v\n", chl.Id, msg)
+				if chl.Age != 0 {
+					count++
+					bytes += int(msg.Size)
+				}
 				select {
 				case chl.cm.receiveChunks <- msg:
 				case <-chl.cm.ctx.Done():

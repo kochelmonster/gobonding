@@ -38,7 +38,7 @@ func TestWrapped(t *testing.T) {
 		t.Fatalf("wrong wrapped less")
 	}
 
-	(&c).Inc()
+	c = c.Inc()
 	if c != 1 {
 		t.Fatalf("wrong inc")
 	}
@@ -144,7 +144,6 @@ func TestCommunication(t *testing.T) {
 	const TIMEOUT = 5 * time.Second
 
 	config := &gobonding.Config{
-		HeartBeatTime:  "1s",
 		ProxyStartPort: 41414,
 		Channels:       map[string]string{"1": "1", "2": "2"},
 	}
@@ -284,5 +283,5 @@ func TestCommunication(t *testing.T) {
 	cancel()
 	router.Close()
 	proxy.Close()
-	time.Sleep(1)
+	time.Sleep(time.Microsecond)
 }

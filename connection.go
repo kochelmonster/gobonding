@@ -9,14 +9,17 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
+
+	"github.com/repeale/fp-go"
 )
 
 const (
 	// AppVersion contains current application version for -version command flag
 	AppVersion = "0.2.0"
 
-	AVG_SEND_LIMIT = 10 * MTU
+	MIN_SEND_LIMIT = 4 * MTU
 )
 
 /*
@@ -28,25 +31,24 @@ type ConnManager struct {
 	Config      *Config
 
 	activeReceiver uint16
-	receiveChunks  chan *Chunk
-	heartbeat      time.Duration
-	ctx            context.Context
-	Logger         func(format string, v ...any)
+	receiverMutex  sync.Mutex
+	lastReceiveAge Wrapped
+
+	receiveChunks chan *Chunk
+	heartbeat     time.Duration
+	ctx           context.Context
+	Logger        func(format string, v ...any)
 }
 
 func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
-	heartbeat, err := time.ParseDuration(config.HeartBeatTime)
-	if err != nil {
-		heartbeat = 20 * time.Second
-	}
-
 	return &ConnManager{
 		ChunkSupply:    make(chan *Chunk, 2000),
 		Channels:       make([]*Channel, len(config.Channels)),
 		Config:         config,
 		activeReceiver: 0,
+		receiverMutex:  sync.Mutex{},
+		lastReceiveAge: 0,
 		receiveChunks:  make(chan *Chunk),
-		heartbeat:      heartbeat,
 		ctx:            ctx,
 		Logger: func(format string, v ...any) {
 			log.Printf(format, v...)
@@ -82,8 +84,8 @@ func (cm *ConnManager) startMonitor() {
 			case <-time.After(period):
 				channels := ""
 				for _, chl := range cm.Channels {
-					channels += fmt.Sprintf("  - %v:\n    Send: %v\n    %v\n",
-						chl.Id, chl.SendSpeed, chl.ReceiveSpeed)
+					channels += fmt.Sprintf("  - %v:\n    Transmission: %v\n",
+						chl.Id, chl.TransmissionTime)
 				}
 
 				os.WriteFile(cm.Config.MonitorPath, []byte(channels), 0666)
@@ -95,42 +97,71 @@ func (cm *ConnManager) startMonitor() {
 	}
 }
 
-func (cm *ConnManager) handleBlockMsg(chl *Channel) bool {
-	oldestChl := cm.Channels[0]
-	for _, chl := range cm.Channels[1:] {
-		if chl.Age.Less(oldestChl.Age) {
-			oldestChl = chl
+func (cm *ConnManager) handleBlockMsg(chl *Channel) {
+	for i := 0; true; i++ {
+		oldestChl := chl
+		for _, c := range cm.Channels {
+			if c.Age.Less(oldestChl.Age) {
+				oldestChl = c
+			}
 		}
-	}
-	cm.activeReceiver = oldestChl.Id
-	// cm.Log("Activate receive block %v %v\n", oldestChl.Id, oldestChl.Age)
-	if oldestChl.Age == 0 {
-		return true
-	}
 
-	if cm.activeReceiver != chl.Id {
-		go func() {
+		if oldestChl.Age != 0 && i < 40 && cm.lastReceiveAge.Inc().Less(oldestChl.Age) {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if i != 0 {
+			cm.Log("Wait for next age %v(%v) != %v+1| %v ", oldestChl.Id, oldestChl.Age, cm.lastReceiveAge, i)
+		}
+
+		cm.receiverMutex.Lock()
+		defer cm.receiverMutex.Unlock()
+
+		cm.activeReceiver = oldestChl.Id
+		/*cm.Log("Activate receive block %v(%v) %v(%v)\n",
+		oldestChl.Id, oldestChl.Age, chl.Id, chl.Age)*/
+		if oldestChl.Age == 0 {
+			// No receiving channel
+			return
+		}
+		cm.lastReceiveAge = oldestChl.Age
+		if oldestChl.waitForSignal {
 			select {
 			case oldestChl.startSignal <- true:
+				oldestChl.waitForSignal = false
 			case <-cm.ctx.Done():
 			}
-		}()
-		return true
+		}
+		return
 	}
-	return false
+}
+
+func (cm *ConnManager) waitForActivation(chl *Channel) {
+	for cm.activeReceiver != chl.Id {
+		cm.receiverMutex.Lock()
+		if cm.activeReceiver != chl.Id {
+			chl.waitForSignal = true
+			cm.receiverMutex.Unlock()
+			select {
+			case <-chl.startSignal:
+			case <-cm.ctx.Done():
+			}
+		} else {
+			cm.receiverMutex.Unlock()
+		}
+	}
 }
 
 func (cm *ConnManager) calcSendLimit(chl *Channel) int {
-	speedSum := uint64(0)
-	for _, c := range cm.Channels {
-		speedSum += c.SendSpeed
-	}
+	maxTime := fp.Reduce(func(acc time.Duration, current *Channel) time.Duration {
+		if acc > current.TransmissionTime {
+			return acc
+		} else {
+			return current.TransmissionTime
+		}
+	}, 0)(cm.Channels)
 
-	if speedSum == 0 {
-		return AVG_SEND_LIMIT
-	}
-	sumLimit := uint64(len(cm.Channels) * AVG_SEND_LIMIT)
-	return int(chl.SendSpeed * sumLimit / speedSum)
+	return int(MIN_SEND_LIMIT * maxTime / chl.TransmissionTime)
 }
 
 func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
@@ -150,7 +181,7 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 	age := Wrapped(0)
 	active := 0
 	sendBytes := 0
-	limit := AVG_SEND_LIMIT
+	limit := MIN_SEND_LIMIT
 	for {
 		size, err := iface.Read(chunk.Data[0:])
 		switch err {
@@ -168,16 +199,17 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 			chl := cm.Channels[active]
 			if chl.Active() {
 				if sendBytes == 0 {
-					(&age).Inc()
-					// cm.Log("Send Startblock %v %v", chl.Id, age)
+					age = age.Inc()
 					for j := 0; j < 3; j++ {
 						chl.Send(StartBlock(age))
 					}
 					limit = cm.calcSendLimit(chl)
+					/*cm.Log("Send Startblock %v(%v) %v b %v bps = %v",
+					chl.Id, age, limit, chl.SendSpeed, float32(limit)/float32(chl.SendSpeed))*/
 				}
 				sendBytes += size
 
-				cm.Log("Send chunk  %v %v %v %v\n", chl.Id, size, sendBytes, limit)
+				// cm.Log("Send chunk  %v(%v) %v %v < %v\n", chl.Id, age, size, sendBytes, limit)
 				chl.Send(&chunk)
 				if sendBytes > limit {
 					// cm.Log("Send Stopblock %v", chl.Id)
