@@ -3,6 +3,7 @@ package gobonding
 import (
 	"encoding/binary"
 	"fmt"
+	"time"
 )
 
 const (
@@ -13,6 +14,7 @@ const (
 	BUFFERSIZE = 1718
 
 	SOCKET_BUFFER = 1024 * 1024
+	EPOCH         = "2022-01-12T00:00:00"
 )
 
 type Message interface {
@@ -41,12 +43,24 @@ func (msg *Chunk) String() string {
 		}*/
 }
 
+var epoch, _ = time.Parse(time.RFC3339, EPOCH)
+
 type PongMsg struct {
+	Timestamp time.Duration
+}
+
+func Pong() *PongMsg {
+	return &PongMsg{Timestamp: time.Since(epoch)}
+}
+
+func PongFromChunk(chunk *Chunk) *PongMsg {
+	ts := time.Duration(binary.BigEndian.Uint64(chunk.Data[2:10]))
+	return &PongMsg{Timestamp: ts}
 }
 
 func (msg *PongMsg) Buffer() []byte {
-	buffer := make([]byte, MTU)
-	buffer[1] = 'o'
+	buffer := []byte{0, 'o', 0, 0, 0, 0, 0, 0, 0, 0}
+	binary.BigEndian.PutUint64(buffer[2:10], uint64(msg.Timestamp))
 	return buffer
 }
 
@@ -58,9 +72,7 @@ type PingMsg struct {
 }
 
 func (msg *PingMsg) Buffer() []byte {
-	buffer := make([]byte, MTU)
-	buffer[1] = 'i'
-	return buffer
+	return []byte{0, 'i'}
 }
 
 func (msg *PingMsg) String() string {
@@ -68,21 +80,29 @@ func (msg *PingMsg) String() string {
 }
 
 type StartBlockMsg struct {
-	Age Wrapped
+	Age       Wrapped
+	Timestamp time.Duration
+}
+
+func StartBlock(age Wrapped) *StartBlockMsg {
+	return &StartBlockMsg{Age: age, Timestamp: time.Since(epoch)}
+}
+
+func StartBlockFromChunk(chunk *Chunk) *StartBlockMsg {
+	age := Wrapped(binary.BigEndian.Uint16(chunk.Data[2:4]))
+	ts := time.Duration(binary.BigEndian.Uint64(chunk.Data[4:12]))
+	return &StartBlockMsg{Age: age, Timestamp: ts}
 }
 
 func (m *StartBlockMsg) Buffer() []byte {
-	buffer := []byte{0, 'b', 0, 0}
+	buffer := []byte{0, 'b', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	binary.BigEndian.PutUint16(buffer[2:4], uint16(m.Age))
+	binary.BigEndian.PutUint64(buffer[4:12], uint64(m.Timestamp))
 	return buffer
 }
 
 func (msg *StartBlockMsg) String() string {
 	return fmt.Sprintf("StartBlock: %v", msg.Age)
-}
-
-func StartBlock(age Wrapped) *StartBlockMsg {
-	return &StartBlockMsg{Age: age}
 }
 
 // A wrapped counter

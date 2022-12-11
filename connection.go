@@ -84,7 +84,7 @@ func (cm *ConnManager) startMonitor() {
 				channels := ""
 				for _, chl := range cm.Channels {
 					channels += fmt.Sprintf("  - %v:\n    Transmission: %v\n",
-						chl.Id, chl.TransmissionTime)
+						chl.Id, chl.TransmissionSpeed)
 				}
 
 				os.WriteFile(cm.Config.MonitorPath, []byte(channels), 0666)
@@ -152,15 +152,15 @@ func (cm *ConnManager) waitForActivation(chl *Channel) {
 }
 
 func (cm *ConnManager) calcSendLimit(chl *Channel) int {
-	maxTime := fp.Reduce(func(acc time.Duration, current *Channel) time.Duration {
-		if acc > current.TransmissionTime {
+	minSpeed := fp.Reduce(func(acc uint64, current *Channel) uint64 {
+		if acc < current.TransmissionSpeed {
 			return acc
 		} else {
-			return current.TransmissionTime
+			return current.TransmissionSpeed
 		}
-	}, 0)(cm.Channels)
+	}, cm.Channels[0].TransmissionSpeed)(cm.Channels)
 
-	return int(MIN_SEND_LIMIT * maxTime / chl.TransmissionTime)
+	return int(MIN_SEND_LIMIT * chl.TransmissionSpeed / minSpeed)
 }
 
 func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {

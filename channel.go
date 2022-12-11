@@ -1,7 +1,6 @@
 package gobonding
 
 import (
-	"encoding/binary"
 	"fmt"
 	"log"
 	"time"
@@ -9,6 +8,8 @@ import (
 
 const (
 	MIN_SPEED = 128 * 1024 / 8 // 128kbps
+	HEARTBEAT = 2 * time.Minute
+	INACTIVE  = 3 * time.Minute
 )
 
 type ChannelIO interface {
@@ -29,22 +30,24 @@ type Channel struct {
 	cm            *ConnManager
 	lastHeartbeat time.Time
 	lastPing      time.Time
+	clockDelta    time.Duration
 
-	TransmissionTime time.Duration // bytes per second
+	TransmissionSpeed uint64 // bytes per second
 }
 
 func NewChannel(cm *ConnManager, id uint16, io ChannelIO) *Channel {
 	chl := &Channel{
-		Id:               id,
-		Io:               io,
-		Age:              Wrapped(0),
-		startSignal:      make(chan bool),
-		waitForSignal:    false,
-		transmitChl:      make(chan Message, 500),
-		cm:               cm,
-		lastHeartbeat:    time.Time{},
-		lastPing:         time.Time{},
-		TransmissionTime: time.Second,
+		Id:                id,
+		Io:                io,
+		Age:               Wrapped(0),
+		startSignal:       make(chan bool),
+		waitForSignal:     false,
+		transmitChl:       make(chan Message, 500),
+		cm:                cm,
+		lastHeartbeat:     time.Time{},
+		lastPing:          time.Time{},
+		clockDelta:        0,
+		TransmissionSpeed: MIN_SPEED,
 	}
 	cm.Channels[id] = chl
 	return chl
@@ -55,7 +58,7 @@ func (chl *Channel) String() string {
 }
 
 func (chl *Channel) Active() bool {
-	return time.Since(chl.lastHeartbeat) < 4*time.Second
+	return time.Since(chl.lastHeartbeat) < INACTIVE
 }
 
 func (chl *Channel) Start() *Channel {
@@ -77,7 +80,7 @@ func (chl *Channel) Ping() *Channel {
 }
 
 func (chl *Channel) pinger() {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(HEARTBEAT)
 	for {
 		select {
 		case <-ticker.C:
@@ -95,7 +98,7 @@ func (chl *Channel) receiver() {
 	defer chl.cm.Log("Stop receiver %v\n", chl.Id)
 
 	var msg Message
-	received := 0
+	received := uint64(0)
 
 	lastAge := Wrapped(0)
 	chl.cm.Log("start channel receiver %v\n", chl.Id)
@@ -111,7 +114,7 @@ func (chl *Channel) receiver() {
 		}
 		// chl.cm.Log("channel receive  %v: %v %v\n", chl.Id, size, string(chunk.Data[:4]))
 
-		received += size
+		received += uint64(size)
 		chl.lastHeartbeat = time.Now()
 
 		if chunk.Data[0] == 0 { // the ip header first byte
@@ -120,17 +123,29 @@ func (chl *Channel) receiver() {
 
 			switch chunk.Data[1] {
 			case 'o':
-				chl.TransmissionTime = time.Since(chl.lastPing) / 2
+				pong := PongFromChunk(chunk)
+				d1 := chl.lastHeartbeat.Sub(chl.lastPing) / 2
+				tl := chl.lastHeartbeat.Add(d1)
+				tp := epoch.Add(pong.Timestamp)
+				chl.clockDelta = tl.Sub(tp)
 				continue
 			case 'i':
-				chl.Io.Write((&PongMsg{}).Buffer())
+				chl.Io.Write(Pong().Buffer())
 				continue
 			case 'b':
-				sb := StartBlock(Wrapped(binary.BigEndian.Uint16(chunk.Data[2:4])))
+				sb := StartBlockFromChunk(chunk)
 				// chl.cm.Log("receiver %v %v", chl.Id, sb)
 				if lastAge == sb.Age {
 					continue
 				}
+				if sb.Age == 0 {
+					tp := epoch.Add(sb.Timestamp + chl.clockDelta)
+					d := tp.Sub(chl.lastHeartbeat)
+					chl.TransmissionSpeed = received * uint64(time.Second) / uint64(d)
+				} else {
+					received = 0
+				}
+
 				lastAge = sb.Age
 				msg = sb
 			}
