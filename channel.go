@@ -177,6 +177,8 @@ func (chl *Channel) receiver() {
 func (chl *Channel) transmitter() {
 	defer chl.cm.Log("Stop transmitter %v\n", chl.Id)
 
+	lastSpeed := chl.ReceiveSpeed
+	ticker := time.NewTicker(time.Second)
 	chl.cm.Log("start channel transmitter %v\n", chl.Id)
 	count := 0
 	bytes := 0
@@ -210,6 +212,13 @@ func (chl *Channel) transmitter() {
 					log.Println("Stop Receiver", chl.Id)
 					return
 				}
+			}
+
+		case <-ticker.C:
+			if lastSpeed != chl.ReceiveSpeed {
+				chl.cm.Log("Send ReceiveSpeed %v %v\n", chl.Id, chl.ReceiveSpeed)
+				chl.Io.Write((&SpeedMsg{Speed: chl.ReceiveSpeed}).Buffer())
+				lastSpeed = chl.ReceiveSpeed
 			}
 
 		case <-chl.cm.ctx.Done():

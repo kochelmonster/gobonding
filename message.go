@@ -79,6 +79,20 @@ func (msg *PingMsg) String() string {
 	return "Ping"
 }
 
+type SpeedMsg struct {
+	Speed uint64
+}
+
+func (msg *SpeedMsg) Buffer() []byte {
+	buffer := []byte{0, 's', 0, 0, 0, 0, 0, 0, 0, 0}
+	binary.BigEndian.PutUint64(buffer[2:], msg.Speed)
+	return buffer
+}
+
+func (msg *SpeedMsg) String() string {
+	return fmt.Sprintf("Speed: %v", msg.Speed)
+}
+
 type StartBlockMsg struct {
 	Age       Wrapped
 	Timestamp time.Duration
