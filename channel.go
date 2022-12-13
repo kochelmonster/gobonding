@@ -1,15 +1,16 @@
 package gobonding
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log"
 	"time"
 )
 
 const (
-	MIN_SPEED = 128 * 1024 / 8 // 128kbps
-	HEARTBEAT = 2 * time.Minute
-	INACTIVE  = 3 * time.Minute
+	MIN_SPEED = 128 * 1024 / 8   // 128kbps
+	HEARTBEAT = 20 * time.Second // 2 * time.Minute
+	INACTIVE  = 30 * time.Second //3 * time.Minute
 )
 
 type ChannelIO interface {
@@ -32,22 +33,24 @@ type Channel struct {
 	lastPing      time.Time
 	clockDelta    time.Duration
 
-	TransmissionSpeed uint64 // bytes per second
+	ReceiveSpeed uint64 // bytes per second
+	SendSpeed    uint64
 }
 
 func NewChannel(cm *ConnManager, id uint16, io ChannelIO) *Channel {
 	chl := &Channel{
-		Id:                id,
-		Io:                io,
-		Age:               Wrapped(0),
-		startSignal:       make(chan bool),
-		waitForSignal:     false,
-		transmitChl:       make(chan Message, 500),
-		cm:                cm,
-		lastHeartbeat:     time.Time{},
-		lastPing:          time.Time{},
-		clockDelta:        0,
-		TransmissionSpeed: MIN_SPEED,
+		Id:            id,
+		Io:            io,
+		Age:           Wrapped(0),
+		startSignal:   make(chan bool),
+		waitForSignal: false,
+		transmitChl:   make(chan Message, 500),
+		cm:            cm,
+		lastHeartbeat: time.Time{},
+		lastPing:      time.Time{},
+		clockDelta:    0,
+		ReceiveSpeed:  MIN_SPEED,
+		SendSpeed:     MIN_SPEED,
 	}
 	cm.Channels[id] = chl
 	return chl
@@ -132,6 +135,10 @@ func (chl *Channel) receiver() {
 			case 'i':
 				chl.Io.Write(Pong().Buffer())
 				continue
+			case 's':
+				chl.SendSpeed = binary.BigEndian.Uint64(chunk.Data[2:10])
+				chl.cm.Log("Update Sendspeed %v %v", chl.Id, chl.SendSpeed)
+				continue
 			case 'b':
 				sb := StartBlockFromChunk(chunk)
 				// chl.cm.Log("receiver %v %v", chl.Id, sb)
@@ -139,9 +146,13 @@ func (chl *Channel) receiver() {
 					continue
 				}
 				if sb.Age == 0 {
-					tp := epoch.Add(sb.Timestamp + chl.clockDelta)
+					tp := epoch.Add(sb.Timestamp)
 					d := tp.Sub(chl.lastHeartbeat)
-					chl.TransmissionSpeed = received * uint64(time.Second) / uint64(d)
+					chl.ReceiveSpeed = received * uint64(time.Second) / uint64(d)
+					chl.cm.Log("Transmission speed %v: %v %v = %v/%v", chl.Id, chl.ReceiveSpeed, received, d)
+					if chl.ReceiveSpeed < MIN_SPEED {
+						chl.ReceiveSpeed = MIN_SPEED
+					}
 				} else {
 					received = 0
 				}

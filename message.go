@@ -14,7 +14,6 @@ const (
 	BUFFERSIZE = 1718
 
 	SOCKET_BUFFER = 1024 * 1024
-	EPOCH         = "2022-01-12T00:00:00"
 )
 
 type Message interface {
@@ -43,7 +42,8 @@ func (msg *Chunk) String() string {
 		}*/
 }
 
-var epoch, _ = time.Parse(time.RFC3339, EPOCH)
+var epoch = time.Date(2022, time.January, 1, 0, 0, 0, 0, time.UTC)
+var Epoch = epoch
 
 type PongMsg struct {
 	Timestamp time.Duration
@@ -84,8 +84,8 @@ type StartBlockMsg struct {
 	Timestamp time.Duration
 }
 
-func StartBlock(age Wrapped) *StartBlockMsg {
-	return &StartBlockMsg{Age: age, Timestamp: time.Since(epoch)}
+func StartBlock(age Wrapped, ts time.Time) *StartBlockMsg {
+	return &StartBlockMsg{Age: age, Timestamp: ts.Sub(epoch)}
 }
 
 func StartBlockFromChunk(chunk *Chunk) *StartBlockMsg {

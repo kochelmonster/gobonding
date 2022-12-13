@@ -11,15 +11,13 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-
-	"github.com/repeale/fp-go"
 )
 
 const (
 	// AppVersion contains current application version for -version command flag
 	AppVersion = "0.2.0"
 
-	MIN_SEND_LIMIT = 4 * MTU
+	MIN_SEND_LIMIT = 10 * MTU
 )
 
 /*
@@ -84,7 +82,7 @@ func (cm *ConnManager) startMonitor() {
 				channels := ""
 				for _, chl := range cm.Channels {
 					channels += fmt.Sprintf("  - %v:\n    Transmission: %v\n",
-						chl.Id, chl.TransmissionSpeed)
+						chl.Id, chl.ReceiveSpeed)
 				}
 
 				os.WriteFile(cm.Config.MonitorPath, []byte(channels), 0666)
@@ -152,7 +150,8 @@ func (cm *ConnManager) waitForActivation(chl *Channel) {
 }
 
 func (cm *ConnManager) calcSendLimit(chl *Channel) int {
-	minSpeed := fp.Reduce(func(acc uint64, current *Channel) uint64 {
+	return MIN_SEND_LIMIT
+	/*minSpeed := fp.Reduce(func(acc uint64, current *Channel) uint64 {
 		if acc < current.TransmissionSpeed {
 			return acc
 		} else {
@@ -160,7 +159,7 @@ func (cm *ConnManager) calcSendLimit(chl *Channel) int {
 		}
 	}, cm.Channels[0].TransmissionSpeed)(cm.Channels)
 
-	return int(MIN_SEND_LIMIT * chl.TransmissionSpeed / minSpeed)
+	return int(MIN_SEND_LIMIT * chl.TransmissionSpeed / minSpeed)*/
 }
 
 func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
@@ -181,6 +180,7 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 	active := 0
 	sendBytes := 0
 	limit := MIN_SEND_LIMIT
+	startTime := time.Now()
 	for {
 		size, err := iface.Read(chunk.Data[0:])
 		switch err {
@@ -199,8 +199,9 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 			if chl.Active() {
 				if sendBytes == 0 {
 					age = age.Inc()
+					startTime = time.Now()
 					for j := 0; j < 3; j++ {
-						chl.Send(StartBlock(age))
+						chl.Send(StartBlock(age, startTime))
 					}
 					limit = cm.calcSendLimit(chl)
 					/*cm.Log("Send Startblock %v(%v) %v b %v bps = %v",
@@ -213,7 +214,7 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 				if sendBytes > limit {
 					// cm.Log("Send Stopblock %v", chl.Id)
 					for j := 0; j < 3; j++ {
-						chl.Send(StartBlock(0))
+						chl.Send(StartBlock(0, startTime))
 					}
 					sendBytes = 0
 					active = winc(active)

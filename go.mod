@@ -3,7 +3,6 @@ module github.com/kochelmonster/gobonding
 go 1.19
 
 require (
-	github.com/repeale/fp-go v0.11.1
 	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8
 	github.com/vishvananda/netlink v1.1.0
 	gopkg.in/yaml.v2 v2.4.0
