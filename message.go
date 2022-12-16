@@ -96,27 +96,40 @@ func (msg *SpeedMsg) String() string {
 type StartBlockMsg struct {
 	Age       Wrapped
 	Timestamp time.Duration
+	BlockSize uint32
 }
 
-func StartBlock(age Wrapped, ts time.Time) *StartBlockMsg {
-	return &StartBlockMsg{Age: age, Timestamp: ts.Sub(epoch)}
+func StartBlock(age Wrapped, ts time.Time, bs uint32) *StartBlockMsg {
+	return &StartBlockMsg{Age: age, Timestamp: ts.Sub(epoch), BlockSize: bs}
 }
 
 func StartBlockFromChunk(chunk *Chunk) *StartBlockMsg {
 	age := Wrapped(binary.BigEndian.Uint16(chunk.Data[2:4]))
 	ts := time.Duration(binary.BigEndian.Uint64(chunk.Data[4:12]))
-	return &StartBlockMsg{Age: age, Timestamp: ts}
+	bs := binary.BigEndian.Uint32(chunk.Data[12:16])
+	return &StartBlockMsg{Age: age, Timestamp: ts, BlockSize: bs}
 }
 
 func (m *StartBlockMsg) Buffer() []byte {
-	buffer := []byte{0, 'b', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+	buffer := []byte{0, 'b', 1, 2, 1, 2, 3, 4, 5, 7, 7, 8, 1, 2, 3, 4}
 	binary.BigEndian.PutUint16(buffer[2:4], uint16(m.Age))
 	binary.BigEndian.PutUint64(buffer[4:12], uint64(m.Timestamp))
+	binary.BigEndian.PutUint32(buffer[12:16], uint32(m.BlockSize))
 	return buffer
 }
 
 func (msg *StartBlockMsg) String() string {
 	return fmt.Sprintf("StartBlock: %v", msg.Age)
+}
+
+type StopBlockMsg struct{}
+
+func (m *StopBlockMsg) Buffer() []byte {
+	return []byte{}
+}
+
+func (msg *StopBlockMsg) String() string {
+	return "StopBlock"
 }
 
 // A wrapped counter

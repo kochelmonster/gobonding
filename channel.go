@@ -3,7 +3,7 @@ package gobonding
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
+	"io"
 	"time"
 )
 
@@ -24,10 +24,10 @@ type Channel struct {
 	Io  ChannelIO
 	Age Wrapped
 
-	startSignal   chan bool
-	waitForSignal bool
+	sendQueue    chan Message
+	queue        chan Message
+	pendingChunk *Chunk
 
-	transmitChl   chan Message
 	cm            *ConnManager
 	lastHeartbeat time.Time
 	lastPing      time.Time
@@ -42,9 +42,9 @@ func NewChannel(cm *ConnManager, id uint16, io ChannelIO) *Channel {
 		Id:            id,
 		Io:            io,
 		Age:           Wrapped(0),
-		startSignal:   make(chan bool),
-		waitForSignal: false,
-		transmitChl:   make(chan Message, 500),
+		sendQueue:     make(chan Message, 200),
+		queue:         make(chan Message, 500),
+		pendingChunk:  nil,
 		cm:            cm,
 		lastHeartbeat: time.Time{},
 		lastPing:      time.Time{},
@@ -66,32 +66,34 @@ func (chl *Channel) Active() bool {
 
 func (chl *Channel) Start() *Channel {
 	go chl.receiver()
-	go chl.transmitter()
-	go chl.pinger()
+	go chl.sender()
 	return chl
-}
-
-func (chl *Channel) Send(msg Message) {
-	// chl.cm.Log("channel send %v %v %v", chl.Id, msg, string(msg.Buffer()))
-	chl.Io.Write(msg.Buffer())
 }
 
 func (chl *Channel) Ping() *Channel {
 	chl.lastPing = time.Now()
-	chl.Send(&PingMsg{})
+	chl.sendQueue <- &PingMsg{}
 	return chl
 }
 
-func (chl *Channel) pinger() {
+func (chl *Channel) sender() {
 	ticker := time.NewTicker(HEARTBEAT)
 	for {
 		select {
+		case msg := <-chl.sendQueue:
+			//chl.cm.Log("channel send %v %v %v", chl.Id, msg, string(msg.Buffer()[:4]))
+			chl.Io.Write(msg.Buffer())
+			switch msg := msg.(type) {
+			case *Chunk:
+				chl.cm.FreeChunk(msg)
+			}
+
 		case <-ticker.C:
 			// chl.cm.Log("Send Ping %v\n", chl.Id)
 			chl.Ping()
 
 		case <-chl.cm.ctx.Done():
-			chl.cm.Log("Stop Pinger %v\n", chl.Id)
+			chl.cm.Log("Stop sender %v\n", chl.Id)
 			return
 		}
 	}
@@ -100,12 +102,17 @@ func (chl *Channel) pinger() {
 func (chl *Channel) receiver() {
 	defer chl.cm.Log("Stop receiver %v\n", chl.Id)
 
-	var msg Message
-	received := uint64(0)
-
 	lastAge := Wrapped(0)
 	chl.cm.Log("start channel receiver %v\n", chl.Id)
 	chl.Ping()
+
+	lastSpeed := uint64(0)
+	received := uint64(0)
+	duration := time.Duration(0)
+	chunkBytes := 0
+	blockSize := 0
+	blockStart := time.Now()
+
 	for {
 		chunk := chl.cm.AllocChunk()
 
@@ -133,11 +140,11 @@ func (chl *Channel) receiver() {
 				chl.clockDelta = tl.Sub(tp)
 				continue
 			case 'i':
-				chl.Io.Write(Pong().Buffer())
+				chl.sendQueue <- Pong()
 				continue
 			case 's':
 				chl.SendSpeed = binary.BigEndian.Uint64(chunk.Data[2:10])
-				chl.cm.Log("Update Sendspeed %v %v", chl.Id, chl.SendSpeed)
+				// chl.cm.Log("Update Sendspeed %v %v", chl.Id, chl.SendSpeed)
 				continue
 			case 'b':
 				sb := StartBlockFromChunk(chunk)
@@ -145,85 +152,108 @@ func (chl *Channel) receiver() {
 				if lastAge == sb.Age {
 					continue
 				}
-				if sb.Age == 0 {
-					tp := epoch.Add(sb.Timestamp)
-					d := tp.Sub(chl.lastHeartbeat)
-					chl.ReceiveSpeed = received * uint64(time.Second) / uint64(d)
-					chl.cm.Log("Transmission speed %v: %v %v = %v/%v", chl.Id, chl.ReceiveSpeed, received, d)
+				/*
+					if chunkBytes < blockSize {
+						chl.cm.Log("Missing chunks chunk %v(%v->%v): %v >= %v",
+							chl.Id, chl.Age, sb.Age, chunkBytes, blockSize)
+					}
+				*/
+
+				blockSize = int(sb.BlockSize)
+				chunkBytes = 0
+				blockStart = epoch.Add(sb.Timestamp)
+				lastAge = sb.Age
+				chl.queue <- &StopBlockMsg{}
+				chl.queue <- sb
+			}
+		} else {
+			chunkBytes += size
+			chunk.Size = uint16(size)
+			// chl.cm.Log("receiver %v %v", chl.Id, chunk)
+			chl.queue <- chunk
+
+			if chunkBytes >= blockSize && chunkBytes > 0 {
+				// End of block
+				duration += chl.lastHeartbeat.Sub(blockStart)
+				if duration >= time.Second {
+					chl.ReceiveSpeed = received * uint64(time.Second) / uint64(duration)
+					duration = 0
+					received = 0
 					if chl.ReceiveSpeed < MIN_SPEED {
 						chl.ReceiveSpeed = MIN_SPEED
 					}
-				} else {
-					received = 0
+
+					if lastSpeed != chl.ReceiveSpeed {
+						//chl.cm.Log("Send ReceiveSpeed %v %v\n", chl.Id, chl.ReceiveSpeed)
+						chl.sendQueue <- &SpeedMsg{Speed: chl.ReceiveSpeed}
+						lastSpeed = chl.ReceiveSpeed
+					}
 				}
 
-				lastAge = sb.Age
-				msg = sb
+				chunkBytes = 0
+				blockSize = 0
+				chl.queue <- &StopBlockMsg{}
 			}
-		} else {
-			chunk.Size = uint16(size)
-			msg = chunk
-		}
 
-		select {
-		case chl.transmitChl <- msg:
-		case <-chl.cm.ctx.Done():
-			log.Println("Stop Receiver", chl.Id)
-			return
+			chl.cm.receiveSignal <- true
 		}
 	}
 }
 
-func (chl *Channel) transmitter() {
-	defer chl.cm.Log("Stop transmitter %v\n", chl.Id)
+func (chl *Channel) Write(iface io.ReadWriteCloser, age *Wrapped) (bool, error) {
+	written := false
 
-	lastSpeed := chl.ReceiveSpeed
-	ticker := time.NewTicker(time.Second)
-	chl.cm.Log("start channel transmitter %v\n", chl.Id)
-	count := 0
-	bytes := 0
+	write := func(chunk *Chunk) error {
+		defer chl.cm.FreeChunk(chunk)
+		written = true
+		_, err := iface.Write(chunk.Data[:chunk.Size])
+		return err
+	}
+
+	if chl.pendingChunk != nil {
+		if chl.Age != *age {
+			return written, nil
+		}
+		err := write(chl.pendingChunk)
+		chl.pendingChunk = nil
+		if err != nil {
+			return written, err
+		}
+	}
+
 	for {
-		select {
-		case msg := <-chl.transmitChl:
-			switch msg := msg.(type) {
-			case *StartBlockMsg:
-				if msg.Age == 0 {
-					//chl.cm.Log("received StopBlock %v(%v): %v(%v)\n", chl.Id, chl.Age, count, bytes)
-				} else {
-					//chl.cm.Log("received Startblock %v(%v)\n", chl.Id, msg.Age)
-					count = 0
-					bytes = 0
-				}
-				chl.Age = msg.Age
-				chl.cm.handleBlockMsg(chl)
-				if msg.Age != 0 {
-					chl.cm.waitForActivation(chl)
-					// chl.cm.Log("receive start block %v(%v) %v b/s\n", chl.Id, chl.Age, chl.ReceiveSpeed)
-				}
+		if len(chl.queue) == 0 {
+			return written, nil
+		}
 
-			case *Chunk:
-				if chl.Age != 0 {
-					count++
-					bytes += int(msg.Size)
-				}
-				select {
-				case chl.cm.receiveChunks <- msg:
-				case <-chl.cm.ctx.Done():
-					log.Println("Stop Receiver", chl.Id)
-					return
-				}
+		msg := <-chl.queue
+		switch msg := msg.(type) {
+		case *StartBlockMsg:
+			/*chl.cm.Log("StartBlock %v: %v -> %v ?= %v len=%v bs=%v",
+			chl.Id, chl.Age, msg.Age, *age, len(chl.queue), msg.BlockSize)*/
+			chl.Age = msg.Age
+
+		case *StopBlockMsg:
+			chl.cm.Log("Stop Block %v(%v) %v", chl.Id, chl.Age, *age)
+			if chl.Age == *age {
+				*age = (*age).Inc()
 			}
+			chl.Age = 0
 
-		case <-ticker.C:
-			if lastSpeed != chl.ReceiveSpeed {
-				chl.cm.Log("Send ReceiveSpeed %v %v\n", chl.Id, chl.ReceiveSpeed)
-				chl.Io.Write((&SpeedMsg{Speed: chl.ReceiveSpeed}).Buffer())
-				lastSpeed = chl.ReceiveSpeed
+		case *Chunk:
+			if chl.Age == *age || chl.Age == 0 {
+				/*if chl.Age == 0 {
+					chl.cm.Log("Null Chunk %v(%v): %v", chl.Id, *age, msg)
+				}*/
+
+				err := write(msg)
+				if err != nil {
+					return written, err
+				}
+			} else {
+				chl.pendingChunk = msg
+				return written, nil
 			}
-
-		case <-chl.cm.ctx.Done():
-			log.Println("Stop Receiver", chl.Id)
-			return
 		}
 	}
 }
