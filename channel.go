@@ -191,8 +191,6 @@ func (chl *Channel) receiver() {
 				chunkBytes = 0
 				blockSize = 0
 			}
-
-			chl.cm.receiveSignal <- true
 		}
 	}
 }

@@ -32,7 +32,6 @@ type ConnManager struct {
 
 	ChunksToWrite chan *Chunk
 	pqueue        []*Chunk
-	receiveSignal chan bool
 	ctx           context.Context
 	Logger        func(format string, v ...any)
 }
@@ -44,7 +43,6 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		Config:        config,
 		ChunksToWrite: make(chan *Chunk, 100),
 		pqueue:        []*Chunk{},
-		receiveSignal: make(chan bool),
 		ctx:           ctx,
 		Logger: func(format string, v ...any) {
 			log.Printf(format, v...)
@@ -183,37 +181,54 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 	timer := time.NewTimer(TickTime)
 	timer.Stop()
 	timerRunning := false
+	queueAges := func() []int { return fp.Map(func(c *Chunk) int { return int(c.Age) })(cm.pqueue) }
 
 	for {
 		select {
 		case chunk := <-cm.ChunksToWrite:
-			if len(cm.pqueue) == 0 && timerRunning {
+			if timerRunning && len(cm.pqueue) == 0 {
 				timer.Stop()
 				timerRunning = false
 			}
+
+			//cm.Log("Receive %v ?= %v %v", nextAge, chunk.Age, len(cm.pqueue))
 			idx := sort.Search(len(cm.pqueue), func(i int) bool {
 				return chunk.Age.Less(cm.pqueue[i].Age)
 			})
-			cm.pqueue = append(cm.pqueue[:idx+1], cm.pqueue[idx:]...)
-			cm.pqueue[idx] = chunk
+			if idx < len(cm.pqueue) {
+				cm.pqueue = append(cm.pqueue[:idx+1], cm.pqueue[idx:]...)
+				cm.pqueue[idx] = chunk
+			} else {
+				cm.pqueue = append(cm.pqueue, chunk)
+			}
 
 		case <-timer.C:
+			cm.Log("Correction Timer %v: %v", nextAge, queueAges())
 			if len(cm.pqueue) > 0 {
 				nextAge = cm.pqueue[0].Age
 			}
+			timerRunning = false
 
 		case <-cm.ctx.Done():
 			return
 		}
-
 		cut := 0
+	Outer:
 		for i, c := range cm.pqueue {
-			if c.Age != nextAge && !timerRunning {
-				timerRunning = true
-				timer.Reset(TickTime)
-				break
+			switch {
+			case c.Age == nextAge:
+				nextAge = nextAge.Inc()
+
+			case c.Age.Less(nextAge):
+
+			case nextAge.Less(c.Age):
+				if !timerRunning {
+					cm.Log("Start Correction Timer %v != %v(%v): %v", nextAge, c.Age, c.Size, queueAges())
+					timerRunning = true
+					timer.Reset(TickTime)
+				}
+				break Outer
 			}
-			nextAge = nextAge.Inc()
 			cut = i + 1
 			_, err := iface.Write(c.IPData())
 			cm.FreeChunk(c)

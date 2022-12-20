@@ -22,7 +22,7 @@ type Message interface {
 }
 
 type Chunk struct {
-	Data [BUFFERSIZE + 2]byte
+	Data [BUFFERSIZE]byte
 	Size uint16
 	Age  Wrapped
 }
