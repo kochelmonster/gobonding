@@ -32,11 +32,11 @@ func (msg *Chunk) Buffer() []byte {
 }
 
 func (msg *Chunk) Gather() {
-	msg.Age = Wrapped(binary.BigEndian.Uint32(msg.Data[0:2]))
+	msg.Age = Wrapped(binary.BigEndian.Uint16(msg.Data[0:2]))
 }
 
 func (msg *Chunk) Set(age Wrapped) {
-	binary.BigEndian.PutUint32(msg.Data[0:2], uint32(msg.Age))
+	binary.BigEndian.PutUint16(msg.Data[0:2], uint16(msg.Age))
 }
 
 func (msg *Chunk) String() string {
