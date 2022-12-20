@@ -20,12 +20,12 @@ type ChannelIO interface {
 }
 
 type Channel struct {
-	Id  uint16
-	Io  ChannelIO
-	Age Wrapped
+	Id      uint16
+	Io      ChannelIO
+	Latency time.Duration
 
 	sendQueue    chan Message
-	queue        chan Message
+	queue        chan *Chunk
 	pendingChunk *Chunk
 
 	cm            *ConnManager
@@ -41,9 +41,9 @@ func NewChannel(cm *ConnManager, id uint16, io ChannelIO) *Channel {
 	chl := &Channel{
 		Id:            id,
 		Io:            io,
-		Age:           Wrapped(0),
+		Latency:       10 * time.Millisecond,
 		sendQueue:     make(chan Message, 200),
-		queue:         make(chan Message, 500),
+		queue:         make(chan *Chunk, 500),
 		pendingChunk:  nil,
 		cm:            cm,
 		lastHeartbeat: time.Time{},
@@ -115,7 +115,7 @@ func (chl *Channel) receiver() {
 
 	for {
 		chunk := chl.cm.AllocChunk()
-
+		chl.Latency = (time.Since(chl.lastHeartbeat) + chl.Latency*9) / 10
 		size, err := chl.Io.Read(chunk.Data[0:])
 		if err != nil {
 			chl.cm.FreeChunk(chunk)
@@ -163,8 +163,7 @@ func (chl *Channel) receiver() {
 				chunkBytes = 0
 				blockStart = epoch.Add(sb.Timestamp)
 				lastAge = sb.Age
-				chl.queue <- &StopBlockMsg{}
-				chl.queue <- sb
+				continue
 			}
 		} else {
 			chunkBytes += size
@@ -192,7 +191,6 @@ func (chl *Channel) receiver() {
 
 				chunkBytes = 0
 				blockSize = 0
-				chl.queue <- &StopBlockMsg{}
 			}
 
 			chl.cm.receiveSignal <- true
@@ -206,12 +204,15 @@ func (chl *Channel) Write(iface io.ReadWriteCloser, age *Wrapped) (bool, error) 
 	write := func(chunk *Chunk) error {
 		defer chl.cm.FreeChunk(chunk)
 		written = true
-		_, err := iface.Write(chunk.Data[:chunk.Size])
+		_, err := iface.Write(chunk.Buffer()[:chunk.Size])
+		if err != nil && *age == chunk.Age {
+			*age = (*age).Inc()
+		}
 		return err
 	}
 
 	if chl.pendingChunk != nil {
-		if chl.Age != *age {
+		if chl.pendingChunk.Age == *age || chl.pendingChunk.Age.Less(*age) {
 			return written, nil
 		}
 		err := write(chl.pendingChunk)
@@ -226,34 +227,15 @@ func (chl *Channel) Write(iface io.ReadWriteCloser, age *Wrapped) (bool, error) 
 			return written, nil
 		}
 
-		msg := <-chl.queue
-		switch msg := msg.(type) {
-		case *StartBlockMsg:
-			/*chl.cm.Log("StartBlock %v: %v -> %v ?= %v len=%v bs=%v",
-			chl.Id, chl.Age, msg.Age, *age, len(chl.queue), msg.BlockSize)*/
-			chl.Age = msg.Age
-
-		case *StopBlockMsg:
-			chl.cm.Log("Stop Block %v(%v) %v", chl.Id, chl.Age, *age)
-			if chl.Age == *age {
-				*age = (*age).Inc()
+		chunk := <-chl.queue
+		if chunk.Age == *age || chunk.Age.Less(*age) {
+			err := write(chunk)
+			if err != nil {
+				return written, err
 			}
-			chl.Age = 0
-
-		case *Chunk:
-			if chl.Age == *age || chl.Age == 0 {
-				/*if chl.Age == 0 {
-					chl.cm.Log("Null Chunk %v(%v): %v", chl.Id, *age, msg)
-				}*/
-
-				err := write(msg)
-				if err != nil {
-					return written, err
-				}
-			} else {
-				chl.pendingChunk = msg
-				return written, nil
-			}
+		} else {
+			chl.pendingChunk = chunk
+			return written, nil
 		}
 	}
 }

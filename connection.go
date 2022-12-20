@@ -129,7 +129,7 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 	limit := MIN_SEND_LIMIT
 	for {
 		chunk := cm.AllocChunk()
-		size, err := iface.Read(chunk.Data[0:])
+		size, err := iface.Read(chunk.Buffer())
 		switch err {
 		case io.EOF:
 			return
@@ -139,6 +139,8 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 			continue
 		}
 		chunk.Size = uint16(size)
+		chunk.Set(age)
+
 		// cm.Log("Iface Read  %v\n", size)
 
 		for i := 0; i < len(cm.Channels); i++ {
@@ -146,7 +148,6 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 			if chl.Active() {
 				if sendBytes == 0 {
 					limit = cm.calcSendLimit(chl)
-					age = age.Inc()
 					startTime := time.Now()
 					for j := 0; j < 3; j++ {
 						chl.sendQueue <- StartBlock(age, startTime, limit)
@@ -168,18 +169,8 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 			active = winc(active)
 		}
 		// chunk will be skipped if no active channel is available
+		age = age.Inc()
 	}
-}
-
-func (cm *ConnManager) oldestChannel() *Channel {
-	chl := cm.Channels[0]
-	for _, c := range cm.Channels[1:] {
-		if (c.Age.Less(chl.Age) || !chl.Active()) && c.Active() {
-			chl = c
-		}
-	}
-
-	return chl
 }
 
 func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
@@ -187,12 +178,17 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 	cm.Log("Start receive loop\n")
 
 	const TickTime = 10 * time.Millisecond
-	lastChunkTS := time.Now()
-	ticker := time.NewTicker(TickTime)
+	timer := time.NewTimer(TickTime)
+	timer.Stop()
 	lastAge := Wrapped(0)
+	ageToCorrect := Wrapped(0)
 	for {
 		select {
 		case <-cm.receiveSignal:
+			timer.Stop()
+			anyWritten := false
+			lat := 0 * time.Millisecond
+			ageToCorrect = Wrapped(0)
 			for _, chl := range cm.Channels {
 				written, err := chl.Write(iface, &lastAge)
 				switch err {
@@ -203,19 +199,25 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 					cm.Log("Error writing packet %v\n", err)
 					continue
 				}
-				if written {
-					lastChunkTS = time.Now()
+				if written || anyWritten {
+					anyWritten = true
+					continue
+				}
+				if lat < chl.Latency {
+					lat = chl.Latency
+				}
+				if chl.pendingChunk != nil && chl.pendingChunk.Age.Less(ageToCorrect) {
+					ageToCorrect = chl.pendingChunk.Age
 				}
 			}
+			if !anyWritten && ageToCorrect != 0 {
+				timer.Reset(lat)
+			}
 
-		case <-ticker.C:
-			if time.Since(lastChunkTS) > TickTime {
-				chl := cm.oldestChannel()
-				if chl.Age != 0 && chl.Age != lastAge {
-					ages := fp.Map(func(c *Channel) Wrapped { return c.Age })(cm.Channels)
-					cm.Log("change expected age %v->%v: %v", lastAge, chl.Age, ages)
-					lastAge = chl.Age
-				}
+		case <-timer.C:
+			lastAge = ageToCorrect
+			if len(cm.receiveSignal) == 0 {
+				cm.receiveSignal <- true
 			}
 
 		case <-cm.ctx.Done():

@@ -11,7 +11,7 @@ const (
 
 	// BSIZE is size of buffer to receive packets
 	// (little bit bigger than maximum)
-	BUFFERSIZE = 1718
+	BUFFERSIZE = MTU + 218
 
 	SOCKET_BUFFER = 1024 * 1024
 )
@@ -24,11 +24,19 @@ type Message interface {
 type Chunk struct {
 	Data [BUFFERSIZE + 2]byte
 	Size uint16
+	Age  Wrapped
 }
 
 func (msg *Chunk) Buffer() []byte {
-	// log.Println("Send", c.Addr)
-	return msg.Data[:msg.Size]
+	return msg.Data[2:]
+}
+
+func (msg *Chunk) Gather() {
+	msg.Age = Wrapped(binary.BigEndian.Uint32(msg.Data[0:2]))
+}
+
+func (msg *Chunk) Set(age Wrapped) {
+	binary.BigEndian.PutUint32(msg.Data[0:2], uint32(msg.Age))
 }
 
 func (msg *Chunk) String() string {
@@ -120,16 +128,6 @@ func (m *StartBlockMsg) Buffer() []byte {
 
 func (msg *StartBlockMsg) String() string {
 	return fmt.Sprintf("StartBlock: %v", msg.Age)
-}
-
-type StopBlockMsg struct{}
-
-func (m *StopBlockMsg) Buffer() []byte {
-	return []byte{}
-}
-
-func (msg *StopBlockMsg) String() string {
-	return "StopBlock"
 }
 
 // A wrapped counter
