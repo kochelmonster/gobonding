@@ -3,7 +3,6 @@ package gobonding
 import (
 	"encoding/binary"
 	"fmt"
-	"io"
 	"time"
 )
 
@@ -167,9 +166,9 @@ func (chl *Channel) receiver() {
 			}
 		} else {
 			chunkBytes += size
-			chunk.Size = uint16(size)
+			chunk.Gather(uint16(size))
 			// chl.cm.Log("receiver %v %v", chl.Id, chunk)
-			chl.queue <- chunk
+			chl.cm.ChunksToWrite <- chunk
 
 			if chunkBytes >= blockSize && chunkBytes > 0 {
 				// End of block
@@ -194,48 +193,6 @@ func (chl *Channel) receiver() {
 			}
 
 			chl.cm.receiveSignal <- true
-		}
-	}
-}
-
-func (chl *Channel) Write(iface io.ReadWriteCloser, age *Wrapped) (bool, error) {
-	written := false
-
-	write := func(chunk *Chunk) error {
-		defer chl.cm.FreeChunk(chunk)
-		written = true
-		_, err := iface.Write(chunk.Data[:chunk.Size])
-		if err != nil && *age == chunk.Age {
-			*age = (*age).Inc()
-		}
-		return err
-	}
-
-	if chl.pendingChunk != nil {
-		if chl.pendingChunk.Age == *age || chl.pendingChunk.Age.Less(*age) {
-			return written, nil
-		}
-		err := write(chl.pendingChunk)
-		chl.pendingChunk = nil
-		if err != nil {
-			return written, err
-		}
-	}
-
-	for {
-		if len(chl.queue) == 0 {
-			return written, nil
-		}
-
-		chunk := <-chl.queue
-		if chunk.Age == *age || chunk.Age.Less(*age) {
-			err := write(chunk)
-			if err != nil {
-				return written, err
-			}
-		} else {
-			chl.pendingChunk = chunk
-			return written, nil
 		}
 	}
 }

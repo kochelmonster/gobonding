@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/repeale/fp-go"
@@ -29,6 +30,8 @@ type ConnManager struct {
 	Channels    []*Channel
 	Config      *Config
 
+	ChunksToWrite chan *Chunk
+	pqueue        []*Chunk
 	receiveSignal chan bool
 	ctx           context.Context
 	Logger        func(format string, v ...any)
@@ -39,7 +42,9 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		ChunkSupply:   make(chan *Chunk, 2000),
 		Channels:      make([]*Channel, len(config.Channels)),
 		Config:        config,
-		receiveSignal: make(chan bool, 1000),
+		ChunksToWrite: make(chan *Chunk, 100),
+		pqueue:        []*Chunk{},
+		receiveSignal: make(chan bool),
 		ctx:           ctx,
 		Logger: func(format string, v ...any) {
 			log.Printf(format, v...)
@@ -173,55 +178,54 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 }
 
 func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
-	defer cm.Log("Shutdown receive loop\n")
-	cm.Log("Start receive loop\n")
-
-	const TickTime = 10 * time.Millisecond
+	nextAge := Wrapped(1)
+	const TickTime = 5 * time.Millisecond
 	timer := time.NewTimer(TickTime)
 	timer.Stop()
-	lastAge := Wrapped(0)
-	ageToCorrect := Wrapped(0)
+	timerRunning := false
+
 	for {
 		select {
-		case <-cm.receiveSignal:
-			timer.Stop()
-			anyWritten := false
-			lat := 0 * time.Millisecond
-			ageToCorrect = Wrapped(0)
-			for _, chl := range cm.Channels {
-				written, err := chl.Write(iface, &lastAge)
-				switch err {
-				case io.EOF:
-					return
-				case nil:
-				default:
-					cm.Log("Error writing packet %v\n", err)
-					continue
-				}
-				if written || anyWritten {
-					anyWritten = true
-					continue
-				}
-				if lat < chl.Latency {
-					lat = chl.Latency
-				}
-				if chl.pendingChunk != nil && chl.pendingChunk.Age.Less(ageToCorrect) {
-					ageToCorrect = chl.pendingChunk.Age
-				}
+		case chunk := <-cm.ChunksToWrite:
+			if len(cm.pqueue) == 0 && timerRunning {
+				timer.Stop()
+				timerRunning = false
 			}
-			if !anyWritten && ageToCorrect != 0 {
-				timer.Reset(lat)
-			}
+			idx := sort.Search(len(cm.pqueue), func(i int) bool {
+				return chunk.Age.Less(cm.pqueue[i].Age)
+			})
+			cm.pqueue = append(cm.pqueue[:idx+1], cm.pqueue[idx:]...)
+			cm.pqueue[idx] = chunk
 
 		case <-timer.C:
-			lastAge = ageToCorrect
-			if len(cm.receiveSignal) == 0 {
-				cm.receiveSignal <- true
+			if len(cm.pqueue) > 0 {
+				nextAge = cm.pqueue[0].Age
 			}
 
 		case <-cm.ctx.Done():
 			return
 		}
+
+		cut := 0
+		for i, c := range cm.pqueue {
+			if c.Age != nextAge && !timerRunning {
+				timerRunning = true
+				timer.Reset(TickTime)
+				break
+			}
+			nextAge = nextAge.Inc()
+			cut = i + 1
+			_, err := iface.Write(c.IPData())
+			cm.FreeChunk(c)
+			switch err {
+			case io.EOF:
+				return
+			case nil:
+			default:
+				cm.Log("Error writing packet %v\n", err)
+			}
+		}
+		cm.pqueue = cm.pqueue[cut:]
 	}
 }
 

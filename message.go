@@ -11,7 +11,7 @@ const (
 
 	// BSIZE is size of buffer to receive packets
 	// (little bit bigger than maximum)
-	BUFFERSIZE = MTU + 218
+	BUFFERSIZE = MTU + 220
 
 	SOCKET_BUFFER = 1024 * 1024
 )
@@ -31,7 +31,12 @@ func (msg *Chunk) Buffer() []byte {
 	return msg.Data[:msg.Size]
 }
 
-func (msg *Chunk) Gather() {
+func (msg *Chunk) IPData() []byte {
+	return msg.Data[:msg.Size-2]
+}
+
+func (msg *Chunk) Gather(size uint16) {
+	msg.Size = size
 	msg.Age = Wrapped(binary.BigEndian.Uint16(msg.Data[msg.Size-2 : msg.Size]))
 }
 
