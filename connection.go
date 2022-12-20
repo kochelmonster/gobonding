@@ -138,8 +138,7 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 			cm.Log("Error reading packet %v\n", err)
 			continue
 		}
-		chunk.Size = uint16(size)
-		chunk.Set(age)
+		chunk.Set(age, uint16(size))
 
 		// cm.Log("Iface Read  %v\n", size)
 
