@@ -204,7 +204,7 @@ func (chl *Channel) Write(iface io.ReadWriteCloser, age *Wrapped) (bool, error) 
 	write := func(chunk *Chunk) error {
 		defer chl.cm.FreeChunk(chunk)
 		written = true
-		_, err := iface.Write(chunk.Buffer()[:chunk.Size])
+		_, err := iface.Write(chunk.Data[:chunk.Size])
 		if err != nil && *age == chunk.Age {
 			*age = (*age).Inc()
 		}

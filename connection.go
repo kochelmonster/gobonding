@@ -123,13 +123,13 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 		return cidx
 	}
 
-	age := Wrapped(0)
+	age := Wrapped(1)
 	active := 0
 	sendBytes := uint32(0)
 	limit := MIN_SEND_LIMIT
 	for {
 		chunk := cm.AllocChunk()
-		size, err := iface.Read(chunk.Buffer())
+		size, err := iface.Read(chunk.Data[:])
 		switch err {
 		case io.EOF:
 			return

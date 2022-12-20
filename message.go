@@ -28,15 +28,16 @@ type Chunk struct {
 }
 
 func (msg *Chunk) Buffer() []byte {
-	return msg.Data[2:]
+	return msg.Data[:msg.Size+2]
 }
 
 func (msg *Chunk) Gather() {
-	msg.Age = Wrapped(binary.BigEndian.Uint16(msg.Data[0:2]))
+	msg.Age = Wrapped(binary.BigEndian.Uint16(msg.Data[msg.Size : msg.Size+2]))
 }
 
 func (msg *Chunk) Set(age Wrapped) {
-	binary.BigEndian.PutUint16(msg.Data[0:2], uint16(msg.Age))
+	msg.Age = age
+	binary.BigEndian.PutUint16(msg.Data[msg.Size:msg.Size+2], uint16(msg.Age))
 }
 
 func (msg *Chunk) String() string {
