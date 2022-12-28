@@ -19,7 +19,7 @@ const (
 	// AppVersion contains current application version for -version command flag
 	AppVersion = "0.2.0"
 
-	MIN_SEND_LIMIT = uint32(2 * MTU)
+	MIN_SEND_LIMIT = 2 * MTU
 )
 
 /*
@@ -41,7 +41,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		ChunkSupply:   make(chan *Chunk, 2000),
 		Channels:      make([]*Channel, len(config.Channels)),
 		Config:        config,
-		ChunksToWrite: make(chan *Chunk, 100),
+		ChunksToWrite: make(chan *Chunk, 50),
 		pqueue:        []*Chunk{},
 		ctx:           ctx,
 		Logger: func(format string, v ...any) {
@@ -91,26 +91,26 @@ func (cm *ConnManager) startMonitor() {
 	}
 }
 
-func (cm *ConnManager) calcSendLimit(chl *Channel) uint32 {
+func (cm *ConnManager) calcSendLimit(chl *Channel) int {
 	/*speed := 0
 	switch chl.Id {
 	case 0:
-		speed = 1
+		speed = 5
 	case 1:
-		speed = 20
+		speed = 3
 	}
-	minSpeed := 1
-	return uint32(int(MIN_SEND_LIMIT) * speed / minSpeed)*/
+	minSpeed := 3
+	return uint64(int(MIN_SEND_LIMIT) * speed / minSpeed)*/
 
-	minSpeed := fp.Reduce(func(acc uint64, current *Channel) uint64 {
-		if acc < current.SendSpeed {
-			return acc
+	minSpeed := fp.Reduce(func(speed float32, c *Channel) float32 {
+		if speed < c.SendSpeed {
+			return speed
 		} else {
-			return current.SendSpeed
+			return c.SendSpeed
 		}
 	}, cm.Channels[0].SendSpeed)(cm.Channels)
 
-	return uint32(MIN_SEND_LIMIT) * uint32(chl.SendSpeed) / uint32(minSpeed)
+	return int(MIN_SEND_LIMIT * chl.SendSpeed / minSpeed)
 }
 
 func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
@@ -128,7 +128,7 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 
 	age := Wrapped(1)
 	active := 0
-	sendBytes := uint32(0)
+	sendBytes := 0
 	limit := MIN_SEND_LIMIT
 	for {
 		chunk := cm.AllocChunk()
@@ -150,21 +150,17 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 			if chl.Active() {
 				if sendBytes == 0 {
 					limit = cm.calcSendLimit(chl)
-					startTime := time.Now()
-					for j := 0; j < 3; j++ {
-						chl.sendQueue <- StartBlock(age, startTime, limit)
-					}
-					/*cm.Log("Send Startblock %v(%v) %v b %v bps = %v",
-					chl.Id, age, limit, chl.SendSpeed, float32(limit)/float32(chl.SendSpeed))*/
+					//cm.Log("Send Block  %v: %v [%v, %v]\n", chl.Id, limit, cm.Channels[0].SendSpeed, cm.Channels[1].SendSpeed)
 				}
-				sendBytes += uint32(size)
+				sendBytes += size
 
-				// cm.Log("Send chunk  %v(%v) %v %v < %v\n", chl.Id, age, size, sendBytes, limit)
+				//cm.Log("Send chunk  %v(%v) %v %v < %v\n", chl.Id, age, size, sendBytes, limit)
 				chl.sendQueue <- chunk
 				if sendBytes >= limit {
 					sendBytes = 0
 					active = winc(active)
 				}
+
 				break
 			}
 			sendBytes = 0
@@ -175,13 +171,20 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 	}
 }
 
+func (cm *ConnManager) Latencies() []time.Duration {
+	return fp.Map(func(c *Channel) time.Duration { return c.Latency })(cm.Channels)
+}
+
+func (cm *ConnManager) QueueAges() []int {
+	return fp.Map(func(c *Chunk) int { return int(c.Age) })(cm.pqueue)
+}
+
 func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 	nextAge := Wrapped(1)
-	const TickTime = 5 * time.Millisecond
-	timer := time.NewTimer(TickTime)
+	const TICK_TIME = 5 * time.Microsecond
+	timer := time.NewTimer(TICK_TIME)
 	timer.Stop()
 	timerRunning := false
-	queueAges := func() []int { return fp.Map(func(c *Chunk) int { return int(c.Age) })(cm.pqueue) }
 
 	for {
 		select {
@@ -203,8 +206,8 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 			}
 
 		case <-timer.C:
-			cm.Log("Correction Timer %v: %v", nextAge, queueAges())
 			if len(cm.pqueue) > 0 {
+				// cm.Log("Correction Timer %v: %v %v", nextAge, cm.QueueAges(), cm.Latencies())
 				nextAge = cm.pqueue[0].Age
 			}
 			timerRunning = false
@@ -223,9 +226,21 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 
 			case nextAge.Less(c.Age):
 				if !timerRunning {
-					cm.Log("Start Correction Timer %v != %v(%v): %v", nextAge, c.Age, c.Size, queueAges())
 					timerRunning = true
-					timer.Reset(TickTime)
+
+					maxLat := fp.Reduce(func(lat time.Duration, current *Channel) time.Duration {
+						if lat > current.Latency {
+							return lat
+						} else {
+							return current.Latency
+						}
+					}, TICK_TIME)(cm.Channels) * 2
+
+					timer.Reset(maxLat)
+					/*
+						cm.Log("Start Correction Timer %v | %v != %v(%v): %v %v",
+							maxLat, nextAge, c.Age, c.Size, cm.QueueAges(), cm.Latencies())
+					*/
 				}
 				break Outer
 			}
@@ -254,7 +269,7 @@ func (cm *ConnManager) AllocChunk() *Chunk {
 }
 
 func (cm *ConnManager) FreeChunk(chunk *Chunk) {
-	cm.ChunkSupply <- chunk
+	//cm.ChunkSupply <- chunk
 }
 
 func (cm *ConnManager) Log(format string, v ...any) {

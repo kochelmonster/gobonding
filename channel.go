@@ -1,15 +1,15 @@
 package gobonding
 
 import (
-	"encoding/binary"
 	"fmt"
 	"time"
 )
 
 const (
-	MIN_SPEED = 128 * 1024 / 8   // 128kbps
-	HEARTBEAT = 20 * time.Second // 2 * time.Minute
-	INACTIVE  = 30 * time.Second //3 * time.Minute
+	HEARTBEAT    = 20 * time.Second // 2 * time.Minute
+	INACTIVE     = 30 * time.Second //3 * time.Minute
+	MIN_SPEED    = 128 * 1024 / 8   // 128kbps
+	SPEED_WINDOW = 500 * time.Millisecond
 )
 
 type ChannelIO interface {
@@ -24,16 +24,13 @@ type Channel struct {
 	Latency time.Duration
 
 	sendQueue    chan Message
-	queue        chan *Chunk
 	pendingChunk *Chunk
 
 	cm            *ConnManager
 	lastHeartbeat time.Time
-	lastPing      time.Time
-	clockDelta    time.Duration
 
-	ReceiveSpeed uint64 // bytes per second
-	SendSpeed    uint64
+	ReceiveSpeed float32 // bytes per second
+	SendSpeed    float32
 }
 
 func NewChannel(cm *ConnManager, id uint16, io ChannelIO) *Channel {
@@ -41,13 +38,10 @@ func NewChannel(cm *ConnManager, id uint16, io ChannelIO) *Channel {
 		Id:            id,
 		Io:            io,
 		Latency:       10 * time.Millisecond,
-		sendQueue:     make(chan Message, 200),
-		queue:         make(chan *Chunk, 500),
+		sendQueue:     make(chan Message, 50),
 		pendingChunk:  nil,
 		cm:            cm,
 		lastHeartbeat: time.Time{},
-		lastPing:      time.Time{},
-		clockDelta:    0,
 		ReceiveSpeed:  MIN_SPEED,
 		SendSpeed:     MIN_SPEED,
 	}
@@ -70,22 +64,32 @@ func (chl *Channel) Start() *Channel {
 }
 
 func (chl *Channel) Ping() *Channel {
-	chl.lastPing = time.Now()
 	chl.sendQueue <- &PingMsg{}
 	return chl
 }
 
 func (chl *Channel) sender() {
 	ticker := time.NewTicker(HEARTBEAT)
+	ts := time.Time{}
+	sent := uint32(0)
 	for {
 		select {
 		case msg := <-chl.sendQueue:
 			//chl.cm.Log("channel send %v %v %v", chl.Id, msg, string(msg.Buffer()[:4]))
-			chl.Io.Write(msg.Buffer())
 			switch msg := msg.(type) {
 			case *Chunk:
-				chl.cm.FreeChunk(msg)
+				if ts.IsZero() {
+					ts = time.Now()
+					sent = uint32(msg.Size)
+				} else {
+					sent += uint32(msg.Size)
+					if time.Since(ts) >= SPEED_WINDOW {
+						chl.Io.Write(SpeedTest(msg.Age, ts, sent).Buffer())
+						ts = time.Time{}
+					}
+				}
 			}
+			chl.Io.Write(msg.Buffer())
 
 		case <-ticker.C:
 			// chl.cm.Log("Send Ping %v\n", chl.Id)
@@ -101,96 +105,64 @@ func (chl *Channel) sender() {
 func (chl *Channel) receiver() {
 	defer chl.cm.Log("Stop receiver %v\n", chl.Id)
 
-	lastAge := Wrapped(0)
 	chl.cm.Log("start channel receiver %v\n", chl.Id)
 	chl.Ping()
 
-	lastSpeed := uint64(0)
-	received := uint64(0)
-	duration := time.Duration(0)
-	chunkBytes := 0
-	blockSize := 0
-	blockStart := time.Now()
-
+	var test *SpeedTestMsg = nil
 	for {
 		chunk := chl.cm.AllocChunk()
-		chl.Latency = (time.Since(chl.lastHeartbeat) + chl.Latency*9) / 10
+		chl.Latency = (time.Since(chl.lastHeartbeat) + chl.Latency*19) / 20
 		size, err := chl.Io.Read(chunk.Data[0:])
 		if err != nil {
-			chl.cm.FreeChunk(chunk)
 			chl.cm.Log("Error reading from connection %v %v", chl.Id, err)
 			return
 		}
 		// chl.cm.Log("channel receive  %v: %v %v\n", chl.Id, size, string(chunk.Data[:4]))
 
-		received += uint64(size)
 		chl.lastHeartbeat = time.Now()
 
 		if chunk.Data[0] == 0 { // the ip header first byte
 			// not an IP Packet -> Control Message
-			defer chl.cm.FreeChunk(chunk)
-
 			switch chunk.Data[1] {
 			case 'o':
-				pong := PongFromChunk(chunk)
-				d1 := chl.lastHeartbeat.Sub(chl.lastPing) / 2
-				tl := chl.lastHeartbeat.Add(d1)
-				tp := epoch.Add(pong.Timestamp)
-				chl.clockDelta = tl.Sub(tp)
 				continue
 			case 'i':
 				chl.sendQueue <- Pong()
 				continue
 			case 's':
-				chl.SendSpeed = binary.BigEndian.Uint64(chunk.Data[2:10])
-				// chl.cm.Log("Update Sendspeed %v %v", chl.Id, chl.SendSpeed)
+				chl.SendSpeed = SpeedFromChunk(chunk).Speed
+				// chl.cm.Log("Update Sendspeed %v %v", chl.Id, chl.SendTime)
 				continue
 			case 'b':
-				sb := StartBlockFromChunk(chunk)
-				// chl.cm.Log("receiver %v %v", chl.Id, sb)
-				if lastAge == sb.Age {
-					continue
-				}
-				/*
-					if chunkBytes < blockSize {
-						chl.cm.Log("Missing chunks chunk %v(%v->%v): %v >= %v",
-							chl.Id, chl.Age, sb.Age, chunkBytes, blockSize)
-					}
-				*/
-
-				blockSize = int(sb.BlockSize)
-				chunkBytes = 0
-				blockStart = epoch.Add(sb.Timestamp)
-				lastAge = sb.Age
-				continue
+				test = SpeedTestFromChunk(chunk)
+				//chl.cm.Log("Got Start block %v %v", chl.Id, block.Age)
 			}
 		} else {
-			chunkBytes += size
 			chunk.Gather(uint16(size))
-			// chl.cm.Log("receiver %v %v", chl.Id, chunk)
-			chl.cm.ChunksToWrite <- chunk
-
-			if chunkBytes >= blockSize && chunkBytes > 0 {
-				// End of block
-				duration += chl.lastHeartbeat.Sub(blockStart)
-				if duration >= time.Second {
-					chl.ReceiveSpeed = received * uint64(time.Second) / uint64(duration)
-					duration = 0
-					received = 0
-					if chl.ReceiveSpeed < MIN_SPEED {
-						chl.ReceiveSpeed = MIN_SPEED
-					}
-
-					if lastSpeed != chl.ReceiveSpeed {
-						//chl.cm.Log("Send ReceiveSpeed %v %v\n", chl.Id, chl.ReceiveSpeed)
-						chl.sendQueue <- &SpeedMsg{Speed: chl.ReceiveSpeed}
-						lastSpeed = chl.ReceiveSpeed
-					}
+			if test != nil && test.Age == chunk.Age {
+				d := time.Since(epoch.Add(test.Timestamp))
+				speed := float32(test.Size) * float32(time.Second) / float32(d)
+				if speed < MIN_SPEED {
+					speed = MIN_SPEED
 				}
 
-				chunkBytes = 0
-				blockSize = 0
+				if float32(speed) < 0.9*float32(chl.ReceiveSpeed) ||
+					1.1*float32(chl.ReceiveSpeed) < float32(speed) {
+					chl.ReceiveSpeed = speed
+					chl.sendQueue <- &SpeedMsg{Speed: chl.ReceiveSpeed}
+					/*
+						chl.cm.Log("Calc Speed %v(%v-%v): %v = %v / %v f=%.2f mps0=%.2f mps1=%.2f",
+							chl.Id, test.Age, chunk.Age, speed, test.Size, d,
+							chl.cm.Channels[1].ReceiveSpeed/chl.cm.Channels[0].ReceiveSpeed,
+							chl.cm.Channels[0].ReceiveSpeed*8/(1024*1024),
+							chl.cm.Channels[1].ReceiveSpeed*8/(1024*1024))
+					*/
+				}
+				test = nil
 			}
+
+			// chl.cm.Log("receiver %v %v", chl.Id, chunk)
+			chl.cm.ChunksToWrite <- chunk
 		}
 	}
 }

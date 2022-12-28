@@ -3,6 +3,7 @@ package gobonding
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -11,7 +12,7 @@ const (
 
 	// BSIZE is size of buffer to receive packets
 	// (little bit bigger than maximum)
-	BUFFERSIZE = MTU + 220
+	BUFFERSIZE = MTU + 218 + 2 + 8
 
 	SOCKET_BUFFER = 1024 * 1024
 )
@@ -61,21 +62,14 @@ var epoch = time.Date(2022, time.January, 1, 0, 0, 0, 0, time.UTC)
 var Epoch = epoch
 
 type PongMsg struct {
-	Timestamp time.Duration
 }
 
 func Pong() *PongMsg {
-	return &PongMsg{Timestamp: time.Since(epoch)}
-}
-
-func PongFromChunk(chunk *Chunk) *PongMsg {
-	ts := time.Duration(binary.BigEndian.Uint64(chunk.Data[2:10]))
-	return &PongMsg{Timestamp: ts}
+	return &PongMsg{}
 }
 
 func (msg *PongMsg) Buffer() []byte {
-	buffer := []byte{0, 'o', 0, 0, 0, 0, 0, 0, 0, 0}
-	binary.BigEndian.PutUint64(buffer[2:10], uint64(msg.Timestamp))
+	buffer := []byte{0, 'o'}
 	return buffer
 }
 
@@ -95,12 +89,17 @@ func (msg *PingMsg) String() string {
 }
 
 type SpeedMsg struct {
-	Speed uint64
+	Speed float32
+}
+
+func SpeedFromChunk(chunk *Chunk) *SpeedMsg {
+	speed := math.Float32frombits(binary.BigEndian.Uint32(chunk.Data[2:]))
+	return &SpeedMsg{Speed: speed}
 }
 
 func (msg *SpeedMsg) Buffer() []byte {
-	buffer := []byte{0, 's', 0, 0, 0, 0, 0, 0, 0, 0}
-	binary.BigEndian.PutUint64(buffer[2:], msg.Speed)
+	buffer := []byte{0, 's', 1, 2, 3, 4}
+	binary.BigEndian.PutUint32(buffer[2:], math.Float32bits(msg.Speed))
 	return buffer
 }
 
@@ -108,33 +107,34 @@ func (msg *SpeedMsg) String() string {
 	return fmt.Sprintf("Speed: %v", msg.Speed)
 }
 
-type StartBlockMsg struct {
+type SpeedTestMsg struct {
 	Age       Wrapped
 	Timestamp time.Duration
-	BlockSize uint32
+	Size      uint32
 }
 
-func StartBlock(age Wrapped, ts time.Time, bs uint32) *StartBlockMsg {
-	return &StartBlockMsg{Age: age, Timestamp: ts.Sub(epoch), BlockSize: bs}
+func SpeedTest(age Wrapped, ts time.Time, size uint32) *SpeedTestMsg {
+	return &SpeedTestMsg{Age: age, Timestamp: ts.Sub(epoch), Size: size}
 }
 
-func StartBlockFromChunk(chunk *Chunk) *StartBlockMsg {
+func SpeedTestFromChunk(chunk *Chunk) *SpeedTestMsg {
 	age := Wrapped(binary.BigEndian.Uint16(chunk.Data[2:4]))
 	ts := time.Duration(binary.BigEndian.Uint64(chunk.Data[4:12]))
-	bs := binary.BigEndian.Uint32(chunk.Data[12:16])
-	return &StartBlockMsg{Age: age, Timestamp: ts, BlockSize: bs}
+	size := binary.BigEndian.Uint32(chunk.Data[12:16])
+	return &SpeedTestMsg{Age: age, Timestamp: ts, Size: size}
 }
 
-func (m *StartBlockMsg) Buffer() []byte {
-	buffer := []byte{0, 'b', 1, 2, 1, 2, 3, 4, 5, 7, 7, 8, 1, 2, 3, 4}
+func (m *SpeedTestMsg) Buffer() []byte {
+	buffer := []byte{0, 'b', 1, 2, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4}
 	binary.BigEndian.PutUint16(buffer[2:4], uint16(m.Age))
 	binary.BigEndian.PutUint64(buffer[4:12], uint64(m.Timestamp))
-	binary.BigEndian.PutUint32(buffer[12:16], uint32(m.BlockSize))
+	binary.BigEndian.PutUint32(buffer[12:16], uint32(m.Size))
 	return buffer
 }
 
-func (msg *StartBlockMsg) String() string {
-	return fmt.Sprintf("StartBlock: %v", msg.Age)
+func (msg *SpeedTestMsg) String() string {
+	ts := epoch.Add(msg.Timestamp)
+	return fmt.Sprintf("SpeedTest: %v %v %v", msg.Age, ts, msg.Size)
 }
 
 // A wrapped counter

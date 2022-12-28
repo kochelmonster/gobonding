@@ -285,9 +285,3 @@ func TestCommunication(t *testing.T) {
 	proxy.Close()
 	time.Sleep(time.Microsecond)
 }
-
-func TestPong(t *testing.T) {
-	pong := gobonding.Pong()
-	log.Println("timestamp", pong.Timestamp, "    ", gobonding.Epoch)
-	log.Println("ts", gobonding.Epoch.Add(pong.Timestamp))
-}
