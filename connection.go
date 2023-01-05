@@ -95,13 +95,13 @@ func (cm *ConnManager) calcSendLimit(chl *Channel) int {
 	/*speed := 0
 	switch chl.Id {
 	case 0:
-		speed = 5
+		speed = 8
 	case 1:
-		speed = 3
+		speed = 2
 	}
-	minSpeed := 3
-	return uint64(int(MIN_SEND_LIMIT) * speed / minSpeed)*/
-
+	minSpeed := 2
+	return int(MIN_SEND_LIMIT * speed / minSpeed)
+	*/
 	minSpeed := fp.Reduce(func(speed float32, c *Channel) float32 {
 		if speed < c.SendSpeed {
 			return speed
@@ -179,6 +179,12 @@ func (cm *ConnManager) QueueAges() []int {
 	return fp.Map(func(c *Chunk) int { return int(c.Age) })(cm.pqueue)
 }
 
+func (cm *ConnManager) ReceiveSpeeds() []float32 {
+	return fp.Map(func(c *Channel) float32 {
+		return c.ReceiveSpeed * 8 / (1024 * 1024)
+	})(cm.Channels)
+}
+
 func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 	nextAge := Wrapped(1)
 	const TICK_TIME = 5 * time.Microsecond
@@ -207,7 +213,9 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 
 		case <-timer.C:
 			if len(cm.pqueue) > 0 {
-				// cm.Log("Correction Timer %v: %v %v", nextAge, cm.QueueAges(), cm.Latencies())
+				/*
+					cm.Log("Correction Timer %v: %v %v", nextAge, cm.QueueAges(), cm.Latencies())
+				*/
 				nextAge = cm.pqueue[0].Age
 			}
 			timerRunning = false

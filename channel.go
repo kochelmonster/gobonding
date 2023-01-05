@@ -107,6 +107,7 @@ func (chl *Channel) receiver() {
 
 	chl.cm.Log("start channel receiver %v\n", chl.Id)
 	chl.Ping()
+	chl.lastHeartbeat = time.Now()
 
 	var test *SpeedTestMsg = nil
 	for {
@@ -150,13 +151,9 @@ func (chl *Channel) receiver() {
 					1.1*float32(chl.ReceiveSpeed) < float32(speed) {
 					chl.ReceiveSpeed = speed
 					chl.sendQueue <- &SpeedMsg{Speed: chl.ReceiveSpeed}
-					/*
-						chl.cm.Log("Calc Speed %v(%v-%v): %v = %v / %v f=%.2f mps0=%.2f mps1=%.2f",
-							chl.Id, test.Age, chunk.Age, speed, test.Size, d,
-							chl.cm.Channels[1].ReceiveSpeed/chl.cm.Channels[0].ReceiveSpeed,
-							chl.cm.Channels[0].ReceiveSpeed*8/(1024*1024),
-							chl.cm.Channels[1].ReceiveSpeed*8/(1024*1024))
-					*/
+					chl.cm.Log("Calc Speed %v(%v-%v): %v = %v / %v Speed=%v",
+						chl.Id, test.Age, chunk.Age, speed, test.Size, d,
+						chl.cm.ReceiveSpeeds())
 				}
 				test = nil
 			}
