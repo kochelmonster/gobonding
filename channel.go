@@ -1,7 +1,11 @@
 package gobonding
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -57,8 +61,8 @@ func (chl *Channel) Active() bool {
 	return time.Since(chl.lastHeartbeat) < INACTIVE
 }
 
-func (chl *Channel) Start() *Channel {
-	go chl.receiver()
+func (chl *Channel) Start(isProxy bool) *Channel {
+	go chl.receiver(isProxy)
 	go chl.sender()
 	return chl
 }
@@ -102,14 +106,18 @@ func (chl *Channel) sender() {
 	}
 }
 
-func (chl *Channel) receiver() {
+func (chl *Channel) receiver(isProxy bool) {
 	defer chl.cm.Log("Stop receiver %v\n", chl.Id)
 
 	chl.cm.Log("start channel receiver %v\n", chl.Id)
+
 	chl.Ping()
-	chl.lastHeartbeat = time.Now()
+	chl.lastHeartbeat = time.Now().Add(-20 * time.Hour)
 
 	var test *SpeedTestMsg = nil
+	authenticated := false
+	challenge := Challenge()
+
 	for {
 		chunk := chl.cm.AllocChunk()
 		chl.Latency = (time.Since(chl.lastHeartbeat) + chl.Latency*19) / 20
@@ -118,7 +126,31 @@ func (chl *Channel) receiver() {
 			chl.cm.Log("Error reading from connection %v %v", chl.Id, err)
 			return
 		}
-		// chl.cm.Log("channel receive  %v: %v %v\n", chl.Id, size, string(chunk.Data[:4]))
+		chl.cm.Log("channel receive  %v: %v %v %v\n", chl.Id, size, string(chunk.Data[1]), chunk.Data[:4])
+
+		if isProxy && !authenticated {
+			if chunk.Data[0] == 0 && chunk.Data[1] == 'r' {
+				bPem, _ := pem.Decode([]byte(chl.cm.Config.PublicKey))
+				if bPem == nil {
+					log.Panicln("Not Public Key defined")
+				}
+				key, err := x509.ParsePKIXPublicKey(bPem.Bytes)
+				if err != nil {
+					log.Panicln("Wrong Public Key in config")
+				}
+
+				err = challenge.Verify(key.(*rsa.PublicKey), chunk, size)
+				if err == nil {
+					chl.cm.Log("verified!! %v", chl.Id)
+					authenticated = true
+				} else {
+					chl.cm.Log("Not verified %v: %v", chl.Id, err)
+				}
+			} else {
+				chl.sendQueue <- challenge
+			}
+			continue
+		}
 
 		chl.lastHeartbeat = time.Now()
 
@@ -137,6 +169,20 @@ func (chl *Channel) receiver() {
 			case 'b':
 				test = SpeedTestFromChunk(chunk)
 				//chl.cm.Log("Got Start block %v %v", chl.Id, block.Age)
+			case 'c':
+				bPem, _ := pem.Decode([]byte(chl.cm.Config.PrivateKey))
+				if bPem == nil {
+					log.Panicln("Not Private Key defined")
+				}
+				key, err := x509.ParsePKCS1PrivateKey(bPem.Bytes)
+				if err != nil {
+					log.Panicln("Wrong Private Key in config")
+				}
+				challenge := ChallengeFromChunk(chunk, size)
+				chl.sendQueue <- challenge.CreateResponse(key)
+				continue
+			case 'r':
+				continue
 			}
 		} else {
 			chunk.Gather(uint16(size))

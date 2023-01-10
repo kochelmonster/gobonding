@@ -22,10 +22,10 @@ type Config struct {
 	ProxyStartPort int
 	// A map ifacename or ipaddress of the wan device to ip address of proxy server
 	Channels map[string]string
-	// Certificate of quic Connection
-	Certificate string
-	// Private key of certificate
-	PrivateKey string
+	// Public Key for authentication
+	PublicKey string
+	// Private key for authentication
+	PrivateKey string `yaml:",omitempty"`
 }
 
 func LoadConfig(path string) (*Config, error) {

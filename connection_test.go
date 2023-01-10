@@ -13,6 +13,46 @@ import (
 	"github.com/kochelmonster/gobonding"
 )
 
+const (
+	PUBLIC_KEY = `-----BEGIN RSA PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5QuUZf2wwmK3eMp5NIge
+t0HCLODxJ9VwRsT0b7BHJ5y893EkGlqCc8X6bFSRIa2SVHJWrw0KiIiS3htRS79W
+95msjaraJEpHxJgZr6MsANYcQVJ7UJl7NhN3dMC14YdV61fkk8iC6KhqxRtNIHY1
+kDgCOmt19QaS7rWt1d5v+alM1xoRF0vHUi5icgMitGuMuYqdc59J/1SBk4jwNx+1
+AqI0XkbjPG8ymxYryJNkInLO2qOZ4dEwVPHkjkgg/b3HrG2T94fz51m99pqTZFhB
+Ft0/PdvEjPpNI4t5QbKdUHNfSZyqENU1VVw239/oyQ9c/fl0POCRD1PVYts78Ehb
+rQIDAQAB
+-----END RSA PUBLIC KEY-----
+`
+	PRIVATE_KEY = `-----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEA5QuUZf2wwmK3eMp5NIget0HCLODxJ9VwRsT0b7BHJ5y893Ek
+GlqCc8X6bFSRIa2SVHJWrw0KiIiS3htRS79W95msjaraJEpHxJgZr6MsANYcQVJ7
+UJl7NhN3dMC14YdV61fkk8iC6KhqxRtNIHY1kDgCOmt19QaS7rWt1d5v+alM1xoR
+F0vHUi5icgMitGuMuYqdc59J/1SBk4jwNx+1AqI0XkbjPG8ymxYryJNkInLO2qOZ
+4dEwVPHkjkgg/b3HrG2T94fz51m99pqTZFhBFt0/PdvEjPpNI4t5QbKdUHNfSZyq
+ENU1VVw239/oyQ9c/fl0POCRD1PVYts78EhbrQIDAQABAoIBACSjFIq36LU/Ox/M
+K1UWzOr9TsUE+i4n+vym9n6DEO6qKKPf6il4/tLsASGg6VIcxIJTg8AecufiCLQU
+ZI2cPpn+b9Z9VMVnSFGPDtTEYf6EQSLFwcnjswy0UnBPfwhjMIAjoAFvmlkCz4lV
+06F0px65hsm3dLfL5GbgkrzaBslFWPBqLptFMQXglm5ywkysiPTqzNbsg7nkCKUi
+F7kPZEzdozVKtgRxLgAx3OFhSZU85QAs45wBXyGm2+J/looxSE8rrsu0vw/m/NI5
+d9Y2HgVXbpIeu+hgKljhaGlrQimkoBopzPgKEEspXRklmI/l1tYikIkT3iHRbx1M
+YygDGgECgYEA60LQyKIiyYdZyxVDQMm4V880GX017cBU9q7Iw6GPKVXpfqWAt7yG
+eOHKspLcT3DmNLFNQIQf5XDLd5Rc1JVxzaFYNAn9OdmwQ81BW4qP3hVNtEGQ83RS
+VroEVYs3q09w34507Qina5V2byz0eb/1QoKFfE0zORBAH5WLuKX1zy0CgYEA+Tx9
+3B4IYgMnUgHaEUHvHoLAjiDSQUBlYyhHnRwxJn6LPLIPeQGsvOnrWkNcs5W4/ilj
+ipmrc+SEQrIWQNAjFabcq9E5rkqQxTmUwPrGpa/vtoOGhjIseZLUNBQqUa+Slgg6
+ifj9D6Ky9GZ9sfXGiwMyW9Mk5r3ox9Syn+CAjoECgYBLq/osDrrRx8+CGxy+wiOh
+WuyPJk8qYiryDdZV1qmNyiyIqAN3FhTK3RWtyr9CbjYdzMnkbpsz2cwYcohJeKha
+VANi+bOR4AtqQ6M6Jp+P95o+2LgfFtNFQiASw+zsFWlg/xltBNOVL0YhDHy2jJ/+
+/KyjBtHrEOcPQbLnebpPIQKBgQDiSQfEiAf4ZQCYNlI1BPYDb5c/85Cx6bOjuXh7
+rpL5bj8gllHx/ZFF2+PxCePqsO9K420a87Z0/G8Q1vvZUJ/qEpub69RA6DZUupjS
+NV2SJRCxVu0WfgtfPe4ocn6Rt6SRT1tG1ad9QKzVtRA+OPVQVVCtiiCg1p+4fubG
+vWA7AQKBgBXuxEdhie0NNDUnjKgQWUr1ODzZG1BLX5zd5gZG0c1GWSsYtoPWmXHi
+bW1Er5ORlnMGX847ZZwSW22p3xXUefcWxCM+4HC03GKdT81dXAopKjjYhzd3SLRT
+S2dG0FKqSHGyCeK3z2b1raDptBTXz27ji62kTMXQ1Pmdjg5TpK9v
+-----END RSA PRIVATE KEY-----`
+)
+
 func createConnManager(ctx context.Context) *gobonding.ConnManager {
 	config := gobonding.Config{}
 	return gobonding.NewConnMananger(ctx, &config)
@@ -146,6 +186,8 @@ func TestCommunication(t *testing.T) {
 	config := &gobonding.Config{
 		ProxyStartPort: 41414,
 		Channels:       map[string]string{"1": "1", "2": "2"},
+		PrivateKey:     PRIVATE_KEY,
+		PublicKey:      PUBLIC_KEY,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -173,8 +215,8 @@ func TestCommunication(t *testing.T) {
 		}
 		log.Printf("proxy: "+format, v...)
 	}
-	gobonding.NewChannel(proxy, 0, &MockReader{pr1, rp1, false, ctx}).Start()
-	gobonding.NewChannel(proxy, 1, &MockReader{pr2, rp2, false, ctx}).Start()
+	gobonding.NewChannel(proxy, 0, &MockReader{pr1, rp1, false, ctx}).Start(true)
+	gobonding.NewChannel(proxy, 1, &MockReader{pr2, rp2, false, ctx}).Start(true)
 	go proxy.Receiver(&ioProxy)
 	go proxy.Sender(&ioProxy)
 
@@ -197,8 +239,8 @@ func TestCommunication(t *testing.T) {
 
 		log.Printf("router 1: "+format, v...)
 	}
-	rc1 := gobonding.NewChannel(router, 0, &MockReader{rp1, pr1, false, rctx}).Start()
-	rc2 := gobonding.NewChannel(router, 1, &MockReader{rp2, pr2, false, rctx}).Start()
+	rc1 := gobonding.NewChannel(router, 0, &MockReader{rp1, pr1, false, rctx}).Start(false)
+	rc2 := gobonding.NewChannel(router, 1, &MockReader{rp2, pr2, false, rctx}).Start(false)
 	go router.Receiver(&ioRouter)
 	go router.Sender(&ioRouter)
 
@@ -206,11 +248,11 @@ func TestCommunication(t *testing.T) {
 	waitForChannels(proxy)
 
 	log.Println("Send Test")
-	ioRouter.Input <- []byte("Test")
+	ioRouter.Input <- []byte("\x01\x01Test")
 
 	select {
 	case cmp := <-ioProxy.Output:
-		if string(cmp) != "Test" {
+		if string(cmp) != "\x01\x01Test" {
 			t.Fatalf("Wrong Firstmessage")
 		}
 	case <-time.After(TIMEOUT):
@@ -256,8 +298,8 @@ func TestCommunication(t *testing.T) {
 	router.Logger = func(format string, v ...any) {
 		log.Printf("router 2: "+format, v...)
 	}
-	gobonding.NewChannel(router, 0, &MockReader{rp1, pr1, false, ctx}).Start()
-	gobonding.NewChannel(router, 1, &MockReader{rp2, pr2, false, ctx}).Start()
+	gobonding.NewChannel(router, 0, &MockReader{rp1, pr1, false, ctx}).Start(false)
+	gobonding.NewChannel(router, 1, &MockReader{rp2, pr2, false, ctx}).Start(false)
 	go router.Receiver(&ioRouter)
 	go router.Sender(&ioRouter)
 

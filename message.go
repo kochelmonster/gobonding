@@ -1,9 +1,15 @@
 package gobonding
 
 import (
+	"crypto"
+	crand "crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math"
+	"math/rand"
 	"time"
 )
 
@@ -135,6 +141,62 @@ func (m *SpeedTestMsg) Buffer() []byte {
 func (msg *SpeedTestMsg) String() string {
 	ts := epoch.Add(msg.Timestamp)
 	return fmt.Sprintf("SpeedTest: %v %v %v", msg.Age, ts, msg.Size)
+}
+
+type ChallengeMsg struct {
+	Challenge string
+}
+
+func Challenge() *ChallengeMsg {
+	return &ChallengeMsg{Challenge: fmt.Sprintf("HEL%v%v", time.Now(), rand.Int())}
+}
+
+func ChallengeFromChunk(chunk *Chunk, size int) *ChallengeMsg {
+	return &ChallengeMsg{Challenge: string(chunk.Data[2:size])}
+}
+
+func (m *ChallengeMsg) Buffer() []byte {
+	return append([]byte{0, 'c'}, []byte(m.Challenge)...)
+}
+
+func (m *ChallengeMsg) CreateResponse(privKey *rsa.PrivateKey) *ChallengeResponseMsg {
+	h := sha256.New()
+	h.Write([]byte(m.Challenge))
+	hash := h.Sum(nil)
+	response, err := rsa.SignPSS(crand.Reader, privKey, crypto.SHA256, hash, nil)
+	if err == nil {
+		err = rsa.VerifyPSS(&privKey.PublicKey, crypto.SHA256, hash, response, nil)
+		if err != nil {
+			log.Printf("!!!Wrong Verify %v\n", err)
+		}
+
+		return &ChallengeResponseMsg{Response: string(response)}
+	}
+	return &ChallengeResponseMsg{Response: ""}
+}
+
+func (m *ChallengeMsg) Verify(pubKey *rsa.PublicKey, chunk *Chunk, size int) error {
+	h := sha256.New()
+	h.Write([]byte(m.Challenge))
+	hash := h.Sum(nil)
+	response := chunk.Data[2:size]
+	return rsa.VerifyPSS(pubKey, crypto.SHA256, hash, response, nil)
+}
+
+func (msg *ChallengeMsg) String() string {
+	return fmt.Sprintf("Challenge: %v", msg.Challenge)
+}
+
+type ChallengeResponseMsg struct {
+	Response string
+}
+
+func (m *ChallengeResponseMsg) Buffer() []byte {
+	return append([]byte{0, 'r'}, []byte(m.Response)...)
+}
+
+func (msg *ChallengeResponseMsg) String() string {
+	return fmt.Sprintf("ChallengeResponseMsg: %v", []byte(msg.Response))
 }
 
 // A wrapped counter

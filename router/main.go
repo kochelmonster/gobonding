@@ -50,13 +50,14 @@ func createChannels(cm *gobonding.ConnManager) {
 		}
 
 		udpConn, err := net.DialUDP("udp", &net.UDPAddr{IP: laddr, Port: 0}, raddr)
+		log.Printf("Dial %v->%v\n", laddr, raddr)
 		if err != nil {
 			panic(err)
 		}
 		udpConn.SetReadBuffer(gobonding.SOCKET_BUFFER)
 		udpConn.SetWriteBuffer(0)
 
-		gobonding.NewChannel(cm, i, &RouterIO{udpConn}).Start()
+		gobonding.NewChannel(cm, i, &RouterIO{udpConn}).Start(false)
 		i++
 	}
 }
