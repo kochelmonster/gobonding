@@ -120,13 +120,17 @@ func (chl *Channel) receiver(isProxy bool) {
 
 	for {
 		chunk := chl.cm.AllocChunk()
-		chl.Latency = (time.Since(chl.lastHeartbeat) + chl.Latency*19) / 20
+		lat := time.Since(chl.lastHeartbeat)
+		if lat > 10*time.Millisecond {
+			lat = 10 * time.Millisecond
+		}
+		chl.Latency = (lat + chl.Latency*19) / 20
 		size, err := chl.Io.Read(chunk.Data[0:])
 		if err != nil {
 			chl.cm.Log("Error reading from connection %v %v", chl.Id, err)
 			return
 		}
-		chl.cm.Log("channel receive  %v: %v %v %v\n", chl.Id, size, string(chunk.Data[1]), chunk.Data[:4])
+		// chl.cm.Log("channel receive  %v: %v %v %v\n", chl.Id, size, string(chunk.Data[1]), chunk.Data[:4])
 
 		if isProxy && !authenticated {
 			if chunk.Data[0] == 0 && chunk.Data[1] == 'r' {
