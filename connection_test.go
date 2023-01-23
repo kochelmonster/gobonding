@@ -215,8 +215,8 @@ func TestCommunication(t *testing.T) {
 		}
 		log.Printf("proxy: "+format, v...)
 	}
-	gobonding.NewChannel(proxy, 0, &MockReader{pr1, rp1, false, ctx}).Start(true)
-	gobonding.NewChannel(proxy, 1, &MockReader{pr2, rp2, false, ctx}).Start(true)
+	gobonding.NewChannel(proxy, 0, &MockReader{pr1, rp1, false, ctx}, true).Start()
+	gobonding.NewChannel(proxy, 1, &MockReader{pr2, rp2, false, ctx}, true).Start()
 	go proxy.Receiver(&ioProxy)
 	go proxy.Sender(&ioProxy)
 
@@ -239,8 +239,8 @@ func TestCommunication(t *testing.T) {
 
 		log.Printf("router 1: "+format, v...)
 	}
-	rc1 := gobonding.NewChannel(router, 0, &MockReader{rp1, pr1, false, rctx}).Start(false)
-	rc2 := gobonding.NewChannel(router, 1, &MockReader{rp2, pr2, false, rctx}).Start(false)
+	rc1 := gobonding.NewChannel(router, 0, &MockReader{rp1, pr1, false, rctx}, false).Start()
+	rc2 := gobonding.NewChannel(router, 1, &MockReader{rp2, pr2, false, rctx}, false).Start()
 	go router.Receiver(&ioRouter)
 	go router.Sender(&ioRouter)
 
@@ -298,8 +298,8 @@ func TestCommunication(t *testing.T) {
 	router.Logger = func(format string, v ...any) {
 		log.Printf("router 2: "+format, v...)
 	}
-	gobonding.NewChannel(router, 0, &MockReader{rp1, pr1, false, ctx}).Start(false)
-	gobonding.NewChannel(router, 1, &MockReader{rp2, pr2, false, ctx}).Start(false)
+	gobonding.NewChannel(router, 0, &MockReader{rp1, pr1, false, ctx}, false).Start()
+	gobonding.NewChannel(router, 1, &MockReader{rp2, pr2, false, ctx}, false).Start()
 	go router.Receiver(&ioRouter)
 	go router.Sender(&ioRouter)
 

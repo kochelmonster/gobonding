@@ -32,12 +32,13 @@ type Channel struct {
 
 	cm            *ConnManager
 	lastHeartbeat time.Time
+	Authenticated bool
 
 	ReceiveSpeed float32 // bytes per second
 	SendSpeed    float32
 }
 
-func NewChannel(cm *ConnManager, id uint16, io ChannelIO) *Channel {
+func NewChannel(cm *ConnManager, id uint16, io ChannelIO, isProxy bool) *Channel {
 	chl := &Channel{
 		Id:            id,
 		Io:            io,
@@ -46,6 +47,7 @@ func NewChannel(cm *ConnManager, id uint16, io ChannelIO) *Channel {
 		pendingChunk:  nil,
 		cm:            cm,
 		lastHeartbeat: time.Time{},
+		Authenticated: !isProxy,
 		ReceiveSpeed:  MIN_SPEED,
 		SendSpeed:     MIN_SPEED,
 	}
@@ -61,8 +63,8 @@ func (chl *Channel) Active() bool {
 	return time.Since(chl.lastHeartbeat) < INACTIVE
 }
 
-func (chl *Channel) Start(isProxy bool) *Channel {
-	go chl.receiver(isProxy)
+func (chl *Channel) Start() *Channel {
+	go chl.receiver()
 	go chl.sender()
 	return chl
 }
@@ -79,7 +81,7 @@ func (chl *Channel) sender() {
 	for {
 		select {
 		case msg := <-chl.sendQueue:
-			//chl.cm.Log("channel send %v %v %v", chl.Id, msg, string(msg.Buffer()[:4]))
+			// chl.cm.Log("channel send %v %v %v", chl.Id, msg, chl.Io)
 			switch msg := msg.(type) {
 			case *Chunk:
 				if ts.IsZero() {
@@ -106,7 +108,7 @@ func (chl *Channel) sender() {
 	}
 }
 
-func (chl *Channel) receiver(isProxy bool) {
+func (chl *Channel) receiver() {
 	defer chl.cm.Log("Stop receiver %v\n", chl.Id)
 
 	chl.cm.Log("start channel receiver %v\n", chl.Id)
@@ -115,7 +117,6 @@ func (chl *Channel) receiver(isProxy bool) {
 	chl.lastHeartbeat = time.Now().Add(-20 * time.Hour)
 
 	var test *SpeedTestMsg = nil
-	authenticated := false
 	challenge := Challenge()
 
 	for {
@@ -132,7 +133,7 @@ func (chl *Channel) receiver(isProxy bool) {
 		}
 		// chl.cm.Log("channel receive  %v: %v %v %v\n", chl.Id, size, string(chunk.Data[1]), chunk.Data[:4])
 
-		if isProxy && !authenticated {
+		if !chl.Authenticated {
 			if chunk.Data[0] == 0 && chunk.Data[1] == 'r' {
 				bPem, _ := pem.Decode([]byte(chl.cm.Config.PublicKey))
 				if bPem == nil {
@@ -146,7 +147,7 @@ func (chl *Channel) receiver(isProxy bool) {
 				err = challenge.Verify(key.(*rsa.PublicKey), chunk, size)
 				if err == nil {
 					chl.cm.Log("verified!! %v", chl.Id)
-					authenticated = true
+					chl.Authenticated = true
 				} else {
 					chl.cm.Log("Not verified %v: %v", chl.Id, err)
 				}

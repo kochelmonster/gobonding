@@ -101,7 +101,7 @@ func (cm *ConnManager) calcSendLimit(chl *Channel) int {
 	}
 	minSpeed := 2
 	return int(MIN_SEND_LIMIT * speed / minSpeed)
-	*/
+
 	minSpeed := fp.Reduce(func(speed float32, c *Channel) float32 {
 		if speed < c.SendSpeed {
 			return speed
@@ -109,8 +109,14 @@ func (cm *ConnManager) calcSendLimit(chl *Channel) int {
 			return c.SendSpeed
 		}
 	}, cm.Channels[0].SendSpeed)(cm.Channels)
+	return int(MIN_SEND_LIMIT * chl.SendSpeed / minSpeed)*/
 
-	return int(MIN_SEND_LIMIT * chl.SendSpeed / minSpeed)
+	for _, c := range cm.Channels {
+		if c.SendSpeed > chl.SendSpeed {
+			return MIN_SEND_LIMIT
+		}
+	}
+	return MIN_SEND_LIMIT * 9
 }
 
 func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {

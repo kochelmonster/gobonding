@@ -17,6 +17,11 @@ import (
 type ProxyIO struct {
 	conn *net.UDPConn
 	addr net.Addr
+	chl  *gobonding.Channel
+}
+
+func (io *ProxyIO) String() string {
+	return fmt.Sprintf("IO %v", io.addr)
 }
 
 func (io *ProxyIO) Write(buffer []byte) (int, error) {
@@ -31,7 +36,10 @@ func (io *ProxyIO) Write(buffer []byte) (int, error) {
 
 func (io *ProxyIO) Read(buffer []byte) (int, error) {
 	size, addr, err := io.conn.ReadFrom(buffer)
-	io.addr = addr
+	if io.addr != addr {
+		io.addr = addr
+		io.chl.Authenticated = false
+	}
 	return size, err
 }
 
@@ -49,7 +57,9 @@ func createChannels(cm *gobonding.ConnManager) {
 		conn.SetReadBuffer(gobonding.SOCKET_BUFFER)
 		conn.SetWriteBuffer(0)
 		log.Println("UDP Server started", conn.LocalAddr())
-		gobonding.NewChannel(cm, i, &ProxyIO{conn, nil}).Start(true)
+		io := &ProxyIO{conn, nil, nil}
+		io.chl = gobonding.NewChannel(cm, i, io, true)
+		io.chl.Start()
 	}
 	// go cm.SendPings(ctx, &conn)
 }

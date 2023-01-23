@@ -57,7 +57,7 @@ func createChannels(cm *gobonding.ConnManager) {
 		udpConn.SetReadBuffer(gobonding.SOCKET_BUFFER)
 		udpConn.SetWriteBuffer(0)
 
-		gobonding.NewChannel(cm, i, &RouterIO{udpConn}).Start(false)
+		gobonding.NewChannel(cm, i, &RouterIO{udpConn}, false).Start()
 		i++
 	}
 }
