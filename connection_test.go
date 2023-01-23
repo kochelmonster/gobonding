@@ -53,11 +53,6 @@ S2dG0FKqSHGyCeK3z2b1raDptBTXz27ji62kTMXQ1Pmdjg5TpK9v
 -----END RSA PRIVATE KEY-----`
 )
 
-func createConnManager(ctx context.Context) *gobonding.ConnManager {
-	config := gobonding.Config{}
-	return gobonding.NewConnMananger(ctx, &config)
-}
-
 func TestWrapped(t *testing.T) {
 	a := gobonding.Wrapped(0)
 	b := gobonding.Wrapped(1)
@@ -82,27 +77,6 @@ func TestWrapped(t *testing.T) {
 	if c != 1 {
 		t.Fatalf("wrong inc")
 	}
-}
-
-func TestAllocAndFree(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cm := createConnManager(ctx)
-
-	chunk1 := cm.AllocChunk()
-	chunk2 := cm.AllocChunk()
-	chunk1.Size = 1
-	chunk2.Size = 2
-	cm.FreeChunk(chunk1)
-
-	chunk3 := cm.AllocChunk()
-	if chunk3.Size != 1 {
-		t.Fatalf("Chunk not reused")
-	}
-
-	cm.FreeChunk(chunk3)
-	cm.FreeChunk(chunk2)
-
-	cancel()
 }
 
 type MockReader struct {

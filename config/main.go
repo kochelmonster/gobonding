@@ -49,6 +49,8 @@ var COMMENTS = [...]string{
 	"\n# A map of wan device to ip address of proxy server\nchannels",
 	"\n# Public key for authentication\npublickey",
 	"\n# Private key for authentication\nprivatekey",
+	"\n# Name of the distribution balancer\nbalancer",
+	"\n# Start of port range to proxy\nproxystartport",
 }
 
 func main() {
@@ -107,6 +109,7 @@ func WriteConfigFile(parentDir, proxy string, devs map[string]string) {
 		MonitorPath:    "/var/lib/gobonding/monitor.yml",
 		MonitorTick:    "5s",
 		ProxyStartPort: 41414,
+		Balancer:       "relative",
 		Channels:       channels,
 		PrivateKey:     string(privatePEM),
 		PublicKey:      string(publicPEM),
@@ -145,8 +148,7 @@ func WriteRouterSetup(parentDir string, devs map[string]string) {
 	}
 	wrules := ""
 	for dev, i := range devToTable {
-		prefix := replaceLast(devs[dev], "0") + "/24"
-		wrules += fmt.Sprintf(WANRULE, prefix, i)
+		wrules += fmt.Sprintf(WANRULE, dev, i)
 	}
 
 	wroutes := ""

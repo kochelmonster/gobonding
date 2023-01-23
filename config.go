@@ -17,7 +17,8 @@ type Config struct {
 	MonitorPath string
 	// The Tick interval to update the monitor file
 	MonitorTick string
-
+	// The name of the channel balancer
+	Balancer string
 	// The start Port the proxy is listening to
 	ProxyStartPort int
 	// A map ifacename or ipaddress of the wan device to ip address of proxy server

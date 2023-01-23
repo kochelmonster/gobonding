@@ -22,13 +22,48 @@ const (
 	MIN_SEND_LIMIT = 2 * MTU
 )
 
+type Balancer interface {
+	CalcSendLimit(chl *Channel, cm *ConnManager) int
+}
+
 /*
-Dispatches Chunks to Channels
+Distributes the IP packets according to the last measured channel speeds.
+*/
+type RelativeBalancer struct{}
+
+func (b *RelativeBalancer) CalcSendLimit(chl *Channel, cm *ConnManager) int {
+	minSpeed := fp.Reduce(func(speed float32, c *Channel) float32 {
+		if speed < c.SendSpeed {
+			return speed
+		} else {
+			return c.SendSpeed
+		}
+	}, cm.Channels[0].SendSpeed)(cm.Channels)
+	return int(MIN_SEND_LIMIT * chl.SendSpeed / minSpeed)
+}
+
+/*
+The fastest channel gets 90% of the IP packets all other 10%
+*/
+type PrioBalancer struct{}
+
+func (b *PrioBalancer) CalcSendLimit(chl *Channel, cm *ConnManager) int {
+	for _, c := range cm.Channels {
+		if c.SendSpeed > chl.SendSpeed {
+			return MIN_SEND_LIMIT
+		}
+	}
+	return MIN_SEND_LIMIT * 9
+}
+
+/*
+ConnManager is responsible for tunneling (sending and receiving) IP packets through
+multiple channels.
 */
 type ConnManager struct {
-	ChunkSupply chan *Chunk
-	Channels    []*Channel
-	Config      *Config
+	Channels []*Channel
+	Config   *Config
+	Balancer Balancer
 
 	ChunksToWrite chan *Chunk
 	pqueue        []*Chunk
@@ -37,10 +72,19 @@ type ConnManager struct {
 }
 
 func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
+	var balancer Balancer
+	switch config.Balancer {
+	case "prio":
+		balancer = &PrioBalancer{}
+
+	default:
+		balancer = &RelativeBalancer{}
+	}
+
 	return &ConnManager{
-		ChunkSupply:   make(chan *Chunk, 2000),
 		Channels:      make([]*Channel, len(config.Channels)),
 		Config:        config,
+		Balancer:      balancer,
 		ChunksToWrite: make(chan *Chunk, 50),
 		pqueue:        []*Chunk{},
 		ctx:           ctx,
@@ -91,34 +135,6 @@ func (cm *ConnManager) startMonitor() {
 	}
 }
 
-func (cm *ConnManager) calcSendLimit(chl *Channel) int {
-	/*speed := 0
-	switch chl.Id {
-	case 0:
-		speed = 8
-	case 1:
-		speed = 2
-	}
-	minSpeed := 2
-	return int(MIN_SEND_LIMIT * speed / minSpeed)
-
-	minSpeed := fp.Reduce(func(speed float32, c *Channel) float32 {
-		if speed < c.SendSpeed {
-			return speed
-		} else {
-			return c.SendSpeed
-		}
-	}, cm.Channels[0].SendSpeed)(cm.Channels)
-	return int(MIN_SEND_LIMIT * chl.SendSpeed / minSpeed)*/
-
-	for _, c := range cm.Channels {
-		if c.SendSpeed > chl.SendSpeed {
-			return MIN_SEND_LIMIT
-		}
-	}
-	return MIN_SEND_LIMIT * 9
-}
-
 func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 	defer cm.Log("Shutdown send loop\n")
 	cm.Log("Start send loop")
@@ -155,7 +171,7 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 			chl := cm.Channels[active]
 			if chl.Active() {
 				if sendBytes == 0 {
-					limit = cm.calcSendLimit(chl)
+					limit = cm.Balancer.CalcSendLimit(chl, cm)
 					//cm.Log("Send Block  %v: %v [%v, %v]\n", chl.Id, limit, cm.Channels[0].SendSpeed, cm.Channels[1].SendSpeed)
 				}
 				sendBytes += size
@@ -260,7 +276,6 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 			}
 			cut = i + 1
 			_, err := iface.Write(c.IPData())
-			cm.FreeChunk(c)
 			switch err {
 			case io.EOF:
 				return
@@ -274,16 +289,7 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 }
 
 func (cm *ConnManager) AllocChunk() *Chunk {
-	if len(cm.ChunkSupply) == 0 {
-		return &Chunk{
-			Size: 0,
-		}
-	}
-	return <-cm.ChunkSupply
-}
-
-func (cm *ConnManager) FreeChunk(chunk *Chunk) {
-	//cm.ChunkSupply <- chunk
+	return &Chunk{Size: 0}
 }
 
 func (cm *ConnManager) Log(format string, v ...any) {
