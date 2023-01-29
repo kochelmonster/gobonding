@@ -57,7 +57,7 @@ func (b *PrioBalancer) CalcSendLimit(chl *Channel, cm *ConnManager) int {
 }
 
 /*
-ConnManager is responsible for tunneling (sending and receiving) IP packets through
+ConnManager is responsible for tunneling IP packets through
 multiple channels.
 */
 type ConnManager struct {
