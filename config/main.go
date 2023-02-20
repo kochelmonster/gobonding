@@ -18,7 +18,10 @@ import (
 )
 
 const (
-	ROUTER_SETUP = `ip route save table all > /tmp/org-routing
+	ROUTER_SETUP = `set -e
+if [ ! -f /tmp/org-routing ]; then
+	ip route save table all > /tmp/org-routing
+fi
 sysctl -w net.ipv4.ip_forward=1
 sysctl -w net.ipv6.conf.all.forwarding=1
 sysctl -w net.core.rmem_max=2500000
@@ -68,6 +71,12 @@ func main() {
 	}
 
 	proxy := flag.Arg(0)
+
+	if proxy == "" {
+		flag.Usage()
+		os.Exit(0)
+	}
+
 	if net.ParseIP(proxy) == nil {
 		panic(fmt.Sprintf("PROXY %v is not a valid ip address", proxy))
 	}

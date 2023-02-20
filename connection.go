@@ -3,6 +3,7 @@ package gobonding
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -20,7 +21,19 @@ const (
 	AppVersion = "0.2.0"
 
 	MIN_SEND_LIMIT = 2 * MTU
+
+	DEBUG2 = 5
+	DEBUG  = 4
+	INFO   = 3
+	ERROR  = 2
+	FATAL  = 1
 )
+
+var verbosity *int = nil
+
+func init() {
+	verbosity = flag.Int("v", INFO, "verbosity [1-5]")
+}
 
 type Balancer interface {
 	CalcSendLimit(chl *Channel, cm *ConnManager) int
@@ -68,7 +81,7 @@ type ConnManager struct {
 	ChunksToWrite chan *Chunk
 	pqueue        []*Chunk
 	ctx           context.Context
-	Logger        func(format string, v ...any)
+	Logger        func(level int, format string, v ...any)
 }
 
 func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
@@ -88,7 +101,19 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		ChunksToWrite: make(chan *Chunk, 50),
 		pqueue:        []*Chunk{},
 		ctx:           ctx,
-		Logger: func(format string, v ...any) {
+		Logger: func(level int, format string, v ...any) {
+			if *verbosity < level {
+				return
+			}
+
+			switch level {
+			case INFO:
+				format = "INFO:" + format
+			case ERROR:
+				format = "ERROR:" + format
+			default:
+				format = "DEBUG:" + format
+			}
 			log.Printf(format, v...)
 		},
 	}
@@ -122,8 +147,8 @@ func (cm *ConnManager) startMonitor() {
 			case <-time.After(period):
 				channels := ""
 				for _, chl := range cm.Channels {
-					channels += fmt.Sprintf("  - %v:\n    Transmission: %v\n",
-						chl.Id, chl.ReceiveSpeed)
+					channels += fmt.Sprintf("  - %v:\n    Receive: %v\n    Send: %v\n",
+						chl.Id, chl.ReceiveSpeed, chl.SendSpeed)
 				}
 
 				os.WriteFile(cm.Config.MonitorPath, []byte(channels), 0666)
@@ -136,8 +161,8 @@ func (cm *ConnManager) startMonitor() {
 }
 
 func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
-	defer cm.Log("Shutdown send loop\n")
-	cm.Log("Start send loop")
+	defer cm.Log(INFO, "Shutdown send loop\n")
+	cm.Log(INFO, "Start send loop")
 
 	// wrapped inc
 	winc := func(cidx int) int {
@@ -160,19 +185,19 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 			return
 		case nil:
 		default:
-			cm.Log("Error reading packet %v\n", err)
+			cm.Log(INFO, "Error reading packet %v\n", err)
 			continue
 		}
 		chunk.Set(age, uint16(size))
 
-		// cm.Log("Iface Read  %v\n", size)
+		cm.Log(DEBUG2, "Iface Read  %v\n", size)
 
 		for i := 0; i < len(cm.Channels); i++ {
 			chl := cm.Channels[active]
 			if chl.Active() {
 				if sendBytes == 0 {
 					limit = cm.Balancer.CalcSendLimit(chl, cm)
-					//cm.Log("Send Block  %v: %v [%v, %v]\n", chl.Id, limit, cm.Channels[0].SendSpeed, cm.Channels[1].SendSpeed)
+					cm.Log(DEBUG2, "Send Block  %v: %v\n", chl.Id, limit)
 				}
 				sendBytes += size
 
@@ -189,6 +214,7 @@ func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 			active = winc(active)
 		}
 		// chunk will be skipped if no active channel is available
+
 		age = age.Inc()
 	}
 }
@@ -217,12 +243,17 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 	for {
 		select {
 		case chunk := <-cm.ChunksToWrite:
+			/*
+				The received chunks can be in wrong Order. As long we are below the
+				maximum latency limit the chunks are collected and transmitted in
+				correct order, to avoid tcp resending.
+			*/
 			if timerRunning && len(cm.pqueue) == 0 {
 				timer.Stop()
 				timerRunning = false
 			}
 
-			//cm.Log("Receive %v ?= %v %v", nextAge, chunk.Age, len(cm.pqueue))
+			cm.Log(DEBUG2, "Receive %v ?= %v %v", nextAge, chunk.Age, len(cm.pqueue))
 			idx := sort.Search(len(cm.pqueue), func(i int) bool {
 				return chunk.Age.Less(cm.pqueue[i].Age)
 			})
@@ -281,7 +312,7 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 				return
 			case nil:
 			default:
-				cm.Log("Error writing packet %v\n", err)
+				cm.Log(INFO, "Error writing packet %v\n", err)
 			}
 		}
 		cm.pqueue = cm.pqueue[cut:]
@@ -292,8 +323,8 @@ func (cm *ConnManager) AllocChunk() *Chunk {
 	return &Chunk{Size: 0}
 }
 
-func (cm *ConnManager) Log(format string, v ...any) {
-	cm.Logger(format, v...)
+func (cm *ConnManager) Log(level int, format string, v ...any) {
+	cm.Logger(level, format, v...)
 }
 
 /*

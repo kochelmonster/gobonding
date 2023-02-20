@@ -98,20 +98,20 @@ func (chl *Channel) sender() {
 			chl.Io.Write(msg.Buffer())
 
 		case <-ticker.C:
-			// chl.cm.Log("Send Ping %v\n", chl.Id)
+			chl.cm.Log(DEBUG, "Send Ping %v\n", chl.Id)
 			chl.Ping()
 
 		case <-chl.cm.ctx.Done():
-			chl.cm.Log("Stop sender %v\n", chl.Id)
+			chl.cm.Log(INFO, "Stop sender %v\n", chl.Id)
 			return
 		}
 	}
 }
 
 func (chl *Channel) receiver() {
-	defer chl.cm.Log("Stop receiver %v\n", chl.Id)
+	defer chl.cm.Log(INFO, "Stop receiver %v\n", chl.Id)
 
-	chl.cm.Log("start channel receiver %v\n", chl.Id)
+	chl.cm.Log(INFO, "start channel receiver %v\n", chl.Id)
 
 	chl.Ping()
 	chl.lastHeartbeat = time.Now().Add(-20 * time.Hour)
@@ -128,7 +128,7 @@ func (chl *Channel) receiver() {
 		chl.Latency = (lat + chl.Latency*19) / 20
 		size, err := chl.Io.Read(chunk.Data[0:])
 		if err != nil {
-			chl.cm.Log("Error reading from connection %v %v", chl.Id, err)
+			chl.cm.Log(ERROR, "Error reading from connection %v %v", chl.Id, err)
 			return
 		}
 		// chl.cm.Log("channel receive  %v: %v %v %v\n", chl.Id, size, string(chunk.Data[1]), chunk.Data[:4])
@@ -146,10 +146,10 @@ func (chl *Channel) receiver() {
 
 				err = challenge.Verify(key.(*rsa.PublicKey), chunk, size)
 				if err == nil {
-					chl.cm.Log("verified!! %v", chl.Id)
+					chl.cm.Log(INFO, "verified!! %v", chl.Id)
 					chl.Authenticated = true
 				} else {
-					chl.cm.Log("Not verified %v: %v", chl.Id, err)
+					chl.cm.Log(ERROR, "Not verified %v: %v", chl.Id, err)
 				}
 			} else {
 				chl.sendQueue <- challenge
@@ -166,14 +166,15 @@ func (chl *Channel) receiver() {
 				continue
 			case 'i':
 				chl.sendQueue <- Pong()
+				chl.cm.Log(DEBUG, "Send pong %v", chl.Id)
 				continue
 			case 's':
 				chl.SendSpeed = SpeedFromChunk(chunk).Speed
-				// chl.cm.Log("Update Sendspeed %v %v", chl.Id, chl.SendTime)
+				chl.cm.Log(DEBUG, "Update Sendspeed %v", chl.Id)
 				continue
 			case 'b':
 				test = SpeedTestFromChunk(chunk)
-				//chl.cm.Log("Got Start block %v %v", chl.Id, block.Age)
+				chl.cm.Log(DEBUG, "Got Start block %v %v", chl.Id, chunk.Age)
 			case 'c':
 				bPem, _ := pem.Decode([]byte(chl.cm.Config.PrivateKey))
 				if bPem == nil {
@@ -202,7 +203,7 @@ func (chl *Channel) receiver() {
 					1.1*float32(chl.ReceiveSpeed) < float32(speed) {
 					chl.ReceiveSpeed = speed
 					chl.sendQueue <- &SpeedMsg{Speed: chl.ReceiveSpeed}
-					chl.cm.Log("Calc Speed %v(%v-%v): %v = %v / %v Speed=%v",
+					chl.cm.Log(INFO, "Calc Speed %v(%v-%v): %v = %v / %v Speed=%v",
 						chl.Id, test.Age, chunk.Age, speed, test.Size, d,
 						chl.cm.ReceiveSpeeds())
 				}

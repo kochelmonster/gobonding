@@ -1,3 +1,6 @@
+/*
+This file defines all Messages exchanged between router and proxy.
+*/
 package gobonding
 
 import (
@@ -28,6 +31,9 @@ type Message interface {
 	String() string
 }
 
+/*
+A tunneled IP package
+*/
 type Chunk struct {
 	Data [BUFFERSIZE]byte
 	Size uint16
@@ -64,9 +70,23 @@ func (msg *Chunk) String() string {
 		}*/
 }
 
-var epoch = time.Date(2022, time.January, 1, 0, 0, 0, 0, time.UTC)
-var Epoch = epoch
+/*
+Heartbeat test: PingMsg is a request for a Pong response
+*/
+type PingMsg struct {
+}
 
+func (msg *PingMsg) Buffer() []byte {
+	return []byte{0, 'i'}
+}
+
+func (msg *PingMsg) String() string {
+	return "Ping"
+}
+
+/*
+Heartbeat test: PongMsg is a response for a Ping request
+*/
 type PongMsg struct {
 }
 
@@ -83,17 +103,9 @@ func (msg *PongMsg) String() string {
 	return "Pong"
 }
 
-type PingMsg struct {
-}
-
-func (msg *PingMsg) Buffer() []byte {
-	return []byte{0, 'i'}
-}
-
-func (msg *PingMsg) String() string {
-	return "Ping"
-}
-
+/*
+Sends the receiving speed in bytes/sec to the peer.
+*/
 type SpeedMsg struct {
 	Speed float32
 }
@@ -113,10 +125,21 @@ func (msg *SpeedMsg) String() string {
 	return fmt.Sprintf("Speed: %v", msg.Speed)
 }
 
+var epoch = time.Date(2022, time.January, 1, 0, 0, 0, 0, time.UTC)
+var Epoch = epoch
+
+/*
+Sends data to the peer for measuring the receiving speed.
+*/
 type SpeedTestMsg struct {
-	Age       Wrapped
+	// the age of the last Chunk package of this speed test
+	Age Wrapped
+
+	// the local start time
 	Timestamp time.Duration
-	Size      uint32
+
+	// the transferred bytes
+	Size uint32
 }
 
 func SpeedTest(age Wrapped, ts time.Time, size uint32) *SpeedTestMsg {
@@ -143,6 +166,9 @@ func (msg *SpeedTestMsg) String() string {
 	return fmt.Sprintf("SpeedTest: %v %v %v", msg.Age, ts, msg.Size)
 }
 
+/*
+Authentification challenge
+*/
 type ChallengeMsg struct {
 	Challenge string
 }
@@ -187,6 +213,9 @@ func (msg *ChallengeMsg) String() string {
 	return fmt.Sprintf("Challenge: %v", msg.Challenge)
 }
 
+/*
+Authentification Response
+*/
 type ChallengeResponseMsg struct {
 	Response string
 }
@@ -199,7 +228,10 @@ func (msg *ChallengeResponseMsg) String() string {
 	return fmt.Sprintf("ChallengeResponseMsg: %v", []byte(msg.Response))
 }
 
-// A wrapped counter
+/*
+A logical clock that can wrap.
+Used for ordering chunk Messages.
+*/
 type Wrapped uint16
 
 func (wrp Wrapped) Less(other Wrapped) bool {

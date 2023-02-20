@@ -3,10 +3,8 @@ package gobonding_test
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"log"
-	"strings"
 	"testing"
 	"time"
 
@@ -179,14 +177,7 @@ func TestCommunication(t *testing.T) {
 	rp2 := make(chan []byte, 400)
 
 	proxy := gobonding.NewConnMananger(ctx, config)
-	proxy.Logger = func(format string, v ...any) {
-		r := fmt.Sprintf(format, v...)
-		switch {
-		case strings.HasPrefix(r, "++Receive 0") == true:
-			return
-		case strings.HasPrefix(r, "--Receive 0") == true:
-			return
-		}
+	proxy.Logger = func(level int, format string, v ...any) {
 		log.Printf("proxy: "+format, v...)
 	}
 	gobonding.NewChannel(proxy, 0, &MockReader{pr1, rp1, false, ctx}, true).Start()
@@ -203,14 +194,7 @@ func TestCommunication(t *testing.T) {
 		ctx:    rctx,
 	}
 	router := gobonding.NewConnMananger(ctx, config)
-	router.Logger = func(format string, v ...any) {
-		switch {
-		case strings.HasPrefix(format, "++Receive") == true:
-			return
-		case strings.HasPrefix(format, "--Receive") == true:
-			return
-		}
-
+	router.Logger = func(level int, format string, v ...any) {
 		log.Printf("router 1: "+format, v...)
 	}
 	rc1 := gobonding.NewChannel(router, 0, &MockReader{rp1, pr1, false, rctx}, false).Start()
@@ -269,7 +253,7 @@ func TestCommunication(t *testing.T) {
 
 	// New Router must synchronize it self
 	router = gobonding.NewConnMananger(ctx, config)
-	router.Logger = func(format string, v ...any) {
+	router.Logger = func(level int, format string, v ...any) {
 		log.Printf("router 2: "+format, v...)
 	}
 	gobonding.NewChannel(router, 0, &MockReader{rp1, pr1, false, ctx}, false).Start()

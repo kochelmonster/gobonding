@@ -1,0 +1,18 @@
+[Unit]
+Description=Gobonding Proxy Service
+Requires=network-online.target
+After=syslog.target network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/usr/local/gobonding/proxy
+ExecStartPre=sh /usr/local/gobonding/proxy/proxy-setup.sh
+ExecStart=/usr/local/gobonding/proxy/proxy
+ExecStopPost=sh /usr/local/gobonding/proxy/proxy-shutdown.sh
+Restart=on-failure
+RestartSec=60
+KillMode=control-group
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target
