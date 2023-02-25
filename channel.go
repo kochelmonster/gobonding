@@ -81,7 +81,7 @@ func (chl *Channel) sender() {
 	for {
 		select {
 		case msg := <-chl.sendQueue:
-			// chl.cm.Log("channel send %v %v %v", chl.Id, msg, chl.Io)
+			chl.cm.Log(DEBUG2, "channel send %v %v", chl.Id, msg)
 			switch msg := msg.(type) {
 			case *Chunk:
 				if ts.IsZero() {
@@ -98,7 +98,6 @@ func (chl *Channel) sender() {
 			chl.Io.Write(msg.Buffer())
 
 		case <-ticker.C:
-			chl.cm.Log(DEBUG, "Send Ping %v\n", chl.Id)
 			chl.Ping()
 
 		case <-chl.cm.ctx.Done():
@@ -131,7 +130,7 @@ func (chl *Channel) receiver() {
 			chl.cm.Log(ERROR, "Error reading from connection %v %v", chl.Id, err)
 			return
 		}
-		// chl.cm.Log("channel receive  %v: %v %v %v\n", chl.Id, size, string(chunk.Data[1]), chunk.Data[:4])
+		chl.cm.Log(DEBUG2, "channel receive  %v: %v %v %v\n", chl.Id, size, string(chunk.Data[1]), chunk.Data[:4])
 
 		if !chl.Authenticated {
 			if chunk.Data[0] == 0 && chunk.Data[1] == 'r' {
@@ -166,7 +165,6 @@ func (chl *Channel) receiver() {
 				continue
 			case 'i':
 				chl.sendQueue <- Pong()
-				chl.cm.Log(DEBUG, "Send pong %v", chl.Id)
 				continue
 			case 's':
 				chl.SendSpeed = SpeedFromChunk(chunk).Speed
@@ -186,6 +184,7 @@ func (chl *Channel) receiver() {
 				}
 				challenge := ChallengeFromChunk(chunk, size)
 				chl.sendQueue <- challenge.CreateResponse(key)
+				chl.cm.Log(DEBUG, "Send Verification %v", chl.Id)
 				continue
 			case 'r':
 				continue

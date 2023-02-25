@@ -14,6 +14,8 @@ import (
 	"math"
 	"math/rand"
 	"time"
+
+	"golang.org/x/net/ipv4"
 )
 
 const (
@@ -60,14 +62,13 @@ func (msg *Chunk) Set(age Wrapped, size uint16) {
 }
 
 func (msg *Chunk) String() string {
-	return fmt.Sprintf("Chunk %v", msg.Size)
-	/*
-		header, err := ipv4.ParseHeader(msg.Data[0:])
-		if err != nil {
-			return "Error parsing buffer"
-		} else {
-			return fmt.Sprintf("Packet %v: %v", msg.Size, header)
-		}*/
+	//return fmt.Sprintf("Chunk(%v) %v", msg.Age, msg.Size)
+	header, err := ipv4.ParseHeader(msg.Data[0:])
+	if err != nil {
+		return "Error parsing buffer"
+	} else {
+		return fmt.Sprintf("Packet %v: %v", msg.Size, header)
+	}
 }
 
 /*

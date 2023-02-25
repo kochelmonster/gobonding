@@ -52,7 +52,7 @@ var COMMENTS = [...]string{
 	"\n# A map of wan device to ip address of proxy server\nchannels",
 	"\n# Public key for authentication\npublickey",
 	"\n# Private key for authentication\nprivatekey",
-	"\n# Name of the distribution balancer\nbalancer",
+	"\n# Name of the distribution balancer, possible: prio, relative\nbalancer",
 	"\n# Start of port range to proxy\nproxystartport",
 }
 

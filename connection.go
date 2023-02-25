@@ -306,6 +306,7 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 				break Outer
 			}
 			cut = i + 1
+			cm.Log(DEBUG2, "Iface Write %v %v", nextAge, c)
 			_, err := iface.Write(c.IPData())
 			switch err {
 			case io.EOF:
