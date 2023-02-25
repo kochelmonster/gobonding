@@ -36,7 +36,7 @@ func (io *ProxyIO) Write(buffer []byte) (int, error) {
 
 func (io *ProxyIO) Read(buffer []byte) (int, error) {
 	size, addr, err := io.conn.ReadFrom(buffer)
-	if io.addr != addr {
+	if io.addr == nil || io.addr.String() != addr.String() {
 		io.addr = addr
 		io.chl.Authenticated = false
 	}
