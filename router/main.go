@@ -12,60 +12,53 @@ import (
 	"time"
 
 	"github.com/kochelmonster/gobonding"
-	"github.com/lucas-clemente/quic-go"
 )
 
-func createChannel(ctx context.Context, link, proxy string, cm *gobonding.ConnManager, config *gobonding.Config) {
-	laddr, err := gobonding.ToIP(link)
-	if err != nil {
-		panic(err)
-	}
+type RouterIO struct {
+	conn *net.UDPConn
+}
 
-	serverAddr := fmt.Sprintf("%v:%v", proxy, config.ProxyPort)
-	raddr, err := net.ResolveUDPAddr("udp", serverAddr)
+func (io *RouterIO) Write(buffer []byte) (int, error) {
+	_, err := io.conn.Write(buffer)
 	if err != nil {
-		log.Println("Cannot Resolve address", serverAddr, err)
-		return
+		log.Println("error sending", err, io.conn)
 	}
+	return len(buffer), nil
+}
 
-	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: laddr, Port: 0})
-	if err != nil {
-		panic(err)
-	}
+func (io *RouterIO) Read(buffer []byte) (int, error) {
+	return io.conn.Read(buffer)
+}
 
-	tlsConf := gobonding.CreateTlsConf(config)
-	qConf := gobonding.CreateQuickConfig()
-	run := func() {
-		log.Printf("Dialing %v(%v) -> %v\n", laddr, link, serverAddr)
-		conn, err := quic.DialContext(ctx, udpConn, raddr, serverAddr, tlsConf, qConf)
+func (io *RouterIO) Close() error {
+	return io.conn.Close()
+}
+
+func createChannels(cm *gobonding.ConnManager) {
+	i := uint16(0)
+	for link, proxy := range cm.Config.Channels {
+		laddr, err := gobonding.ToIP(link)
 		if err != nil {
-			log.Printf("Error Dialing %v(%v) -> %v: %v\n", laddr, link, serverAddr, err)
-			return
+			panic(err)
 		}
 
-		stream, err := conn.OpenStreamSync(ctx)
+		serverAddr := fmt.Sprintf("%v:%v", proxy, cm.Config.ProxyStartPort+int(i))
+		raddr, err := net.ResolveUDPAddr("udp", serverAddr)
 		if err != nil {
+			log.Println("Cannot Resolve address", serverAddr, err)
 			return
 		}
 
-		if len(cm.ActiveChannels) == 0 {
-			cm.SyncCounter()
+		udpConn, err := net.DialUDP("udp", &net.UDPAddr{IP: laddr, Port: 0}, raddr)
+		log.Printf("Dial %v: %v->%v\n", i, laddr, raddr)
+		if err != nil {
+			panic(err)
 		}
-		gobonding.HandleStream(conn, stream, cm)
-	}
+		udpConn.SetReadBuffer(gobonding.SOCKET_BUFFER)
+		udpConn.SetWriteBuffer(0)
 
-	reconnectTime, err := time.ParseDuration(config.ReconnectTime)
-	if err != nil {
-		reconnectTime = 20 * time.Second
-	}
-	for {
-		run()
-		log.Println("Reconnect")
-		select {
-		case <-time.After(reconnectTime):
-		case <-ctx.Done():
-			return
-		}
+		gobonding.NewChannel(cm, i, &RouterIO{udpConn}, false).Start()
+		i++
 	}
 }
 
@@ -92,14 +85,11 @@ func main() {
 	// start routes changes in config monitoring
 	log.Println("Interface parameters configured", iface)
 
-	cm := gobonding.NewConnMananger(ctx, config)
+	cm := gobonding.NewConnMananger(ctx, config).Start()
 
-	for link, proxy := range config.Channels {
-		go createChannel(ctx, link, proxy, cm, config)
-	}
-
-	go gobonding.WriteToIface(ctx, iface, cm)
-	go gobonding.ReadFromIface(ctx, iface, cm)
+	createChannels(cm)
+	go cm.Receiver(iface)
+	go cm.Sender(iface)
 
 	exitChan := make(chan os.Signal, 1)
 	signal.Notify(exitChan, syscall.SIGTERM)
@@ -107,4 +97,7 @@ func main() {
 
 	<-exitChan
 	cancel()
+	time.Sleep(1 * time.Microsecond)
+	cm.Close()
+	os.Exit(0)
 }

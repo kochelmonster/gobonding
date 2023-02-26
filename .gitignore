@@ -5,3 +5,5 @@ router/router
 .vscode/*
 router-setup.sh
 gobonding.yml
+*.tar.gz
+*.drawio.bkp

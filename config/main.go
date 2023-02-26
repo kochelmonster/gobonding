@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -19,7 +18,10 @@ import (
 )
 
 const (
-	ROUTER_SETUP = `ip route save table all > /tmp/org-routing
+	ROUTER_SETUP = `set -e
+if [ ! -f /tmp/org-routing ]; then
+	ip route save table all > /tmp/org-routing
+fi
 sysctl -w net.ipv4.ip_forward=1
 sysctl -w net.ipv6.conf.all.forwarding=1
 sysctl -w net.core.rmem_max=2500000
@@ -48,8 +50,10 @@ var COMMENTS = [...]string{
 	"\n# The delay a channel tries to reconnect to the proxy after a connection close\nreconnecttime",
 	"\n# The Port the proxy is listening to\nproxyport",
 	"\n# A map of wan device to ip address of proxy server\nchannels",
-	"\n# Certificate of quic Connection\ncertificate",
-	"\n#Private key of certificate\nprivatekey",
+	"\n# Public key for authentication\npublickey",
+	"\n# Private key for authentication\nprivatekey",
+	"\n# Name of the distribution balancer, possible: prio, relative\nbalancer",
+	"\n# Start of port range to proxy\nproxystartport",
 }
 
 func main() {
@@ -67,6 +71,12 @@ func main() {
 	}
 
 	proxy := flag.Arg(0)
+
+	if proxy == "" {
+		flag.Usage()
+		os.Exit(0)
+	}
+
 	if net.ParseIP(proxy) == nil {
 		panic(fmt.Sprintf("PROXY %v is not a valid ip address", proxy))
 	}
@@ -102,31 +112,35 @@ func WriteConfigFile(parentDir, proxy string, devs map[string]string) {
 		channels[dev] = proxy
 	}
 
-	keyPEM, certPEM := generateTLSConfig()
+	privatePEM, publicPEM := generateKeys()
 	config := gobonding.Config{
-		TunName:       "tun0",
-		MonitorPath:   "/var/lib/gobonding/monitor.yml",
-		MonitorTick:   "5s",
-		ReconnectTime: "20s",
-		ProxyPort:     41414,
-		Channels:      channels,
-		PrivateKey:    string(keyPEM),
-		Certificate:   string(certPEM),
-	}
-
-	text, err := yaml.Marshal(config)
-	if err != nil {
-		log.Panicln("Error marshalling config", err)
-	}
-
-	ctext := string(text)
-	for _, c := range COMMENTS {
-		lines := strings.Split(c, "\n")
-		key := lines[len(lines)-1]
-		ctext = strings.Replace(ctext, key, c, -1)
+		TunName:        "tun0",
+		MonitorPath:    "/var/lib/gobonding/monitor.yml",
+		MonitorTick:    "5s",
+		ProxyStartPort: 41414,
+		Balancer:       "relative",
+		Channels:       channels,
+		PrivateKey:     string(privatePEM),
+		PublicKey:      string(publicPEM),
 	}
 
 	for _, d := range []string{"router", "proxy"} {
+		if d == "proxy" {
+			config.PrivateKey = ""
+		}
+
+		text, err := yaml.Marshal(config)
+		if err != nil {
+			log.Panicln("Error marshalling config", err)
+		}
+
+		ctext := string(text)
+		for _, c := range COMMENTS {
+			lines := strings.Split(c, "\n")
+			key := lines[len(lines)-1]
+			ctext = strings.Replace(ctext, key, c, -1)
+		}
+
 		WriteText(parentDir, d, gobonding.CONFFILE, ctext)
 	}
 }
@@ -143,8 +157,7 @@ func WriteRouterSetup(parentDir string, devs map[string]string) {
 	}
 	wrules := ""
 	for dev, i := range devToTable {
-		prefix := replaceLast(devs[dev], "0") + "/24"
-		wrules += fmt.Sprintf(WANRULE, prefix, i)
+		wrules += fmt.Sprintf(WANRULE, dev, i)
 	}
 
 	wroutes := ""
@@ -173,18 +186,19 @@ func WriteText(parent, directory, name, text string) {
 	}
 }
 
-func generateTLSConfig() ([]byte, []byte) {
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
+func generateKeys() ([]byte, []byte) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		panic(err)
+		log.Panicln("Error creating RSA key", err)
 	}
-	template := x509.Certificate{SerialNumber: big.NewInt(1)}
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
-	if err != nil {
-		panic(err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	privatePEM := pem.EncodeToMemory(
+		&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 
-	return keyPEM, certPEM
+	pubASN1, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		log.Panicln("Error marshaling public key", err)
+	}
+	publicPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: pubASN1})
+
+	return privatePEM, publicPEM
 }

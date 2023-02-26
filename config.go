@@ -17,16 +17,16 @@ type Config struct {
 	MonitorPath string
 	// The Tick interval to update the monitor file
 	MonitorTick string
-	// The delay a channel tries to reconnect to the proxy after a connection close
-	ReconnectTime string
-	// The Port the proxy is listening to
-	ProxyPort int
+	// The name of the channel balancer
+	Balancer string
+	// The start Port the proxy is listening to
+	ProxyStartPort int
 	// A map ifacename or ipaddress of the wan device to ip address of proxy server
 	Channels map[string]string
-	// Certificate of quic Connection
-	Certificate string
-	// Private key of certificate
-	PrivateKey string
+	// Public Key for authentication
+	PublicKey string
+	// Private key for authentication
+	PrivateKey string `yaml:",omitempty"`
 }
 
 func LoadConfig(path string) (*Config, error) {

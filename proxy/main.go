@@ -5,49 +5,63 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
+	"time"
 
 	"github.com/kochelmonster/gobonding"
-	"github.com/lucas-clemente/quic-go"
 )
 
-func startDispatcher(ctx context.Context, cm *gobonding.ConnManager, config *gobonding.Config) {
-	tlsConf := gobonding.CreateTlsConf(config)
-	qConf := gobonding.CreateQuickConfig()
-	channels := make(map[string]quic.Connection)
+type ProxyIO struct {
+	conn *net.UDPConn
+	addr net.Addr
+	chl  *gobonding.Channel
+}
 
-	addr := fmt.Sprintf(":%v", config.ProxyPort)
-	listener, err := quic.ListenAddr(addr, tlsConf, qConf)
-	if err != nil {
-		panic(err)
-	}
-	log.Println("Quic Server started", addr)
-	for {
-		conn, err := listener.Accept(ctx)
+func (io *ProxyIO) String() string {
+	return fmt.Sprintf("IO %v", io.addr)
+}
 
-		id := conn.RemoteAddr().String()
-		id = id[:strings.LastIndex(id, ":")]
-		if old, ok := channels[id]; ok {
-			old.CloseWithError(2, "new connection")
-		}
-		channels[id] = conn
-
+func (io *ProxyIO) Write(buffer []byte) (int, error) {
+	if io.addr != nil {
+		_, err := io.conn.WriteTo(buffer, io.addr)
 		if err != nil {
-			log.Println("Error Accept", err)
-			return
+			log.Println("error sending", err, io.conn)
 		}
-
-		go func() {
-			stream, err := conn.AcceptStream(ctx)
-			if err != nil {
-				return
-			}
-			gobonding.HandleStream(conn, stream, cm)
-		}()
 	}
+	return len(buffer), nil
+}
+
+func (io *ProxyIO) Read(buffer []byte) (int, error) {
+	size, addr, err := io.conn.ReadFrom(buffer)
+	if io.addr == nil || io.addr.String() != addr.String() {
+		io.addr = addr
+		io.chl.Authenticated = false
+	}
+	return size, err
+}
+
+func (io *ProxyIO) Close() error {
+	return io.conn.Close()
+}
+
+func createChannels(cm *gobonding.ConnManager) {
+	for i := uint16(0); i < uint16(len(cm.Config.Channels)); i++ {
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{
+			IP: nil, Port: cm.Config.ProxyStartPort + int(i)})
+		if err != nil {
+			panic(err)
+		}
+		conn.SetReadBuffer(gobonding.SOCKET_BUFFER)
+		conn.SetWriteBuffer(0)
+		log.Println("UDP Server started", conn.LocalAddr())
+		io := &ProxyIO{conn, nil, nil}
+		io.chl = gobonding.NewChannel(cm, i, io, true)
+		io.chl.Start()
+	}
+	// go cm.SendPings(ctx, &conn)
 }
 
 func main() {
@@ -69,15 +83,18 @@ func main() {
 
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
-	cm := gobonding.NewConnMananger(ctx, config)
+	cm := gobonding.NewConnMananger(ctx, config).Start()
 
-	go startDispatcher(ctx, cm, config)
-	go gobonding.WriteToIface(ctx, iface, cm)
-	go gobonding.ReadFromIface(ctx, iface, cm)
+	createChannels(cm)
+	go cm.Receiver(iface)
+	go cm.Sender(iface)
 
 	exitChan := make(chan os.Signal, 1)
 	signal.Notify(exitChan, syscall.SIGTERM)
 	signal.Notify(exitChan, syscall.SIGINT)
 	<-exitChan
 	cancel()
+	time.Sleep(1 * time.Microsecond)
+	cm.Close()
+	os.Exit(0)
 }
