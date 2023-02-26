@@ -18,7 +18,7 @@ import (
 
 const (
 	// AppVersion contains current application version for -version command flag
-	AppVersion = "0.2.0"
+	AppVersion = "0.2.1"
 
 	MIN_SEND_LIMIT = 2 * MTU
 
