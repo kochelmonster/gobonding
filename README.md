@@ -2,7 +2,7 @@
 
 A wide area network bonder written in go.
 
-![Overview](https://github.com/[username]/[reponame]/blob/[branch]/image.jpg?raw=true)
+![Overview](https://github.com/kochelmonster/gobonding/blob/main/assets/overview.png?raw=true)
 
 - The router tunnels IP-packets via UDP to the proxy.
 - The protocol is kept very simple for the lowest possible overhead.
