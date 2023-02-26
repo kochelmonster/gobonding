@@ -18,7 +18,7 @@ import (
 
 const (
 	// AppVersion contains current application version for -version command flag
-	AppVersion = "0.2.1"
+	AppVersion = "0.2.2"
 
 	MIN_SEND_LIMIT = 2 * MTU
 
@@ -94,7 +94,7 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 		balancer = &RelativeBalancer{}
 	}
 
-	return &ConnManager{
+	result := &ConnManager{
 		Channels:      make([]*Channel, len(config.Channels)),
 		Config:        config,
 		Balancer:      balancer,
@@ -117,6 +117,8 @@ func NewConnMananger(ctx context.Context, config *Config) *ConnManager {
 			log.Printf(format, v...)
 		},
 	}
+	result.Logger(ERROR, "Start connection %v", AppVersion)
+	return result
 }
 
 func (cm *ConnManager) Close() {
