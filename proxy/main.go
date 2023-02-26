@@ -96,4 +96,5 @@ func main() {
 	cancel()
 	time.Sleep(1 * time.Microsecond)
 	cm.Close()
+	os.Exit(0)
 }

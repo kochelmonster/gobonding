@@ -253,7 +253,6 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 				timerRunning = false
 			}
 
-			cm.Log(DEBUG2, "Receive %v ?= %v %v", nextAge, chunk.Age, len(cm.pqueue))
 			idx := sort.Search(len(cm.pqueue), func(i int) bool {
 				return chunk.Age.Less(cm.pqueue[i].Age)
 			})
@@ -299,7 +298,7 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 
 					timer.Reset(maxLat)
 					/*
-						cm.Log("Start Correction Timer %v | %v != %v(%v): %v %v",
+						cm.Log(DEBUG2, "Start Correction Timer %v | %v != %v(%v): %v %v",
 							maxLat, nextAge, c.Age, c.Size, cm.QueueAges(), cm.Latencies())
 					*/
 				}
