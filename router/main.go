@@ -50,7 +50,7 @@ func createChannels(cm *gobonding.ConnManager) {
 		}
 
 		udpConn, err := net.DialUDP("udp", &net.UDPAddr{IP: laddr, Port: 0}, raddr)
-		log.Printf("Dial %v->%v\n", laddr, raddr)
+		log.Printf("Dial %v: %v->%v\n", i, laddr, raddr)
 		if err != nil {
 			panic(err)
 		}
