@@ -22,16 +22,27 @@ type ChannelIO interface {
 	Close() error
 }
 
+/*
+Represents an UDP connection to the peer.
+*/
 type Channel struct {
-	Id      uint16
-	Io      ChannelIO
+	Id uint16
+
+	// interface to the socket
+	Io ChannelIO
+
+	// time between two received packets
 	Latency time.Duration
 
-	sendQueue    chan Message
-	pendingChunk *Chunk
+	// Messages to send throug this channel
+	sendQueue chan Message
 
-	cm            *ConnManager
+	cm *ConnManager
+
+	// to check for inactive channel (modem down)
 	lastHeartbeat time.Time
+
+	// for proxy: If true channel is authenticated
 	Authenticated bool
 
 	ReceiveSpeed float32 // bytes per second
@@ -44,7 +55,6 @@ func NewChannel(cm *ConnManager, id uint16, io ChannelIO, isProxy bool) *Channel
 		Io:            io,
 		Latency:       10 * time.Millisecond,
 		sendQueue:     make(chan Message, 50),
-		pendingChunk:  nil,
 		cm:            cm,
 		lastHeartbeat: time.Time{},
 		Authenticated: !isProxy,
@@ -74,6 +84,9 @@ func (chl *Channel) Ping() *Channel {
 	return chl
 }
 
+/*
+A go routine that reads from sendQueue Channel and writes to socket.
+*/
 func (chl *Channel) sender() {
 	ticker := time.NewTicker(HEARTBEAT)
 	ts := time.Time{}
@@ -107,6 +120,10 @@ func (chl *Channel) sender() {
 	}
 }
 
+/*
+A go routine that receives from socket, handles administrative
+messages and forwards ip packets to ConnMananger.
+*/
 func (chl *Channel) receiver() {
 	defer chl.cm.Log(INFO, "Stop receiver %v\n", chl.Id)
 
@@ -209,7 +226,7 @@ func (chl *Channel) receiver() {
 				test = nil
 			}
 
-			// chl.cm.Log("receiver %v %v", chl.Id, chunk)
+			// chl.cm.Log(DEBUG2, "receiver %v %v", chl.Id, chunk)
 			chl.cm.ChunksToWrite <- chunk
 		}
 	}

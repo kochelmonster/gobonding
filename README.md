@@ -52,11 +52,11 @@ sh package.sh
 
 ## State
 
-Gobonding runs as expected in a vm-ware simulation with trottled networks. Unfortunately it does not work in the setup in which I wanted to use it. (see Motivation)
+Gobonding runs as expected in a vm-ware simulation with trottled networks. Unfortunately it does not work in the setup in which I wanted to use it.
 
 ## Motivation
 
-I live in a place where only mobile internet delivers decent speed at an affordable price. There are no copper lines or even fiber optic connections. My idea was to use data SIM cards from different providers and use my wife's and I's smartphone as a modem via tethering: when we're both at home, we surf with double speed, if only one is there, at least at single speed.
+I live in a place where only mobile internet delivers decent speed at an affordable price. There are no copper lines or even fiber optic connections. My idea was to use data SIM cards from different providers and use my wife's and my smartphone as a modem via tethering: when we're both at home, we surf with double speed, if only one is there, at least at single speed.
 
 After short research I found the [OpenMPTCP](https://www.openmptcprouter.com/) project.
 Unfortunately, I first had to find a VPS provider that could offer the prerequisite for the OpenMPTCP Proxy, many providers cannot. After I found one, the proxy was installed without any problems, just like the router. And the web GUI of the router shows me quite quickly that it is connected to the proxy via both channels.
@@ -66,22 +66,20 @@ The first speed test was sobering, instead of double the speed, it was transmitt
 I now had a choice: tinker with a system that I only understood rudimentarily, or write something new. Since I'm a developer and not an admin, the choice was easy for me and
 gobonding was born.
 
-The first Version of gobonding based on tcp, delivers almost exact the same results as OpenMPTCP. By changing to UDP and reducing as much overhead as I could, the transmission
-speed improved dramatically but never to the desired (almost) doubling.
-I setup a simulated system in vm-ware and it worked as expected.
+The first version of gobonding based on tcp, delivers almost exact the same results as OpenMPTCP. By changing to UDP and reducing as much overhead as I could, the transmission speed improved dramatically but never to the desired (almost) doubling.
+
+For more research I setup a simulated system in vm-ware and it worked as expected.
 
 ### Why does gobonding not work in the smarphone setup?
 
-The answer is: the transmission speed of mobile internet, at least in my place, constantly and unpredictably changes very fast.
+The short answer is: the transmission speed of mobile internet, at least in my place, constantly and unpredictably changes very fast.
 
-The problem is: To increase the speed to more than one single channel, the distribution of packets must be equal to the speed of channels.
+The detailed answer can be seen in the following graphic:
+![BandWIth](https://github.com/kochelmonster/gobonding/blob/main/assets/overview.png?raw=true)
 
-Assuming channel A is twice as fast as channel B, we only get 1.5 times the speed of A if channel A sends twice the amount of data than channel B.
-
-If the same amount of data were sent over both channels, the proxy would have to wait for B's data and the combined speed would then not be higher than B's speed.
+The accumulated bandwidth is only obtained if the data packets are correctly divided between the channels.
 
 Because of the highly dynamic change of transmission speed of the mobile internet, the
-right distribution of packages is impossible and the speed is always the minimum of
-all channels.
+right distribution of packages is impossible and the transmission speed never sums up.
 
-Any Ideas that could solve this problem are welcome.
+Any ideas that could solve this problem are welcome.

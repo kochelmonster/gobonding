@@ -35,7 +35,11 @@ func init() {
 	verbosity = flag.Int("v", INFO, "verbosity [1-5]")
 }
 
+/*
+Interface for different balancing strategies
+*/
 type Balancer interface {
+	// Returns the amount of byte to send through the channel
 	CalcSendLimit(chl *Channel, cm *ConnManager) int
 }
 
@@ -70,8 +74,8 @@ func (b *PrioBalancer) CalcSendLimit(chl *Channel, cm *ConnManager) int {
 }
 
 /*
-ConnManager is responsible for tunneling IP packets through
-multiple channels.
+ConnManager is responsible for tunneling and distributing the IP packets through
+multiple UDP channels.
 */
 type ConnManager struct {
 	Channels []*Channel
@@ -134,6 +138,9 @@ func (cm *ConnManager) Start() *ConnManager {
 	return cm
 }
 
+/*
+A go routine that logs the channel speeds.
+*/
 func (cm *ConnManager) startMonitor() {
 	period, err := time.ParseDuration(cm.Config.MonitorTick)
 	if err != nil {
@@ -162,6 +169,10 @@ func (cm *ConnManager) startMonitor() {
 	}
 }
 
+/*
+A go routine that reads IP Packets from tunnel interface and distributes
+them to channels via a weighted round robin strategie.
+*/
 func (cm *ConnManager) Sender(iface io.ReadWriteCloser) {
 	defer cm.Log(INFO, "Shutdown send loop\n")
 	cm.Log(INFO, "Start send loop")
@@ -235,6 +246,10 @@ func (cm *ConnManager) ReceiveSpeeds() []float32 {
 	})(cm.Channels)
 }
 
+/*
+A go routine that received IP Packets from channels, sort them
+and write to tunnel interface.
+*/
 func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 	nextAge := Wrapped(1)
 	const TICK_TIME = 5 * time.Microsecond
@@ -246,7 +261,7 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 		select {
 		case chunk := <-cm.ChunksToWrite:
 			/*
-				The received chunks can be in wrong Order. As long we are below the
+				The received chunks can be in wrong order. As long we are below the
 				maximum latency limit the chunks are collected and transmitted in
 				correct order, to avoid tcp resending.
 			*/
@@ -267,9 +282,7 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 
 		case <-timer.C:
 			if len(cm.pqueue) > 0 {
-				/*
-					cm.Log("Correction Timer %v: %v %v", nextAge, cm.QueueAges(), cm.Latencies())
-				*/
+				//cm.Log("Correction Timer %v: %v %v", nextAge, cm.QueueAges(), cm.Latencies())
 				nextAge = cm.pqueue[0].Age
 			}
 			timerRunning = false
@@ -282,11 +295,14 @@ func (cm *ConnManager) Receiver(iface io.ReadWriteCloser) {
 		for i, c := range cm.pqueue {
 			switch {
 			case c.Age == nextAge:
+				// chunk age == expected -> send
 				nextAge = nextAge.Inc()
 
 			case c.Age.Less(nextAge):
+				// chunk age < expected -> send
 
 			case nextAge.Less(c.Age):
+				// chunk age > expected -> save in queue
 				if !timerRunning {
 					timerRunning = true
 
