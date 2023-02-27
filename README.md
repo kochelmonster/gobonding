@@ -75,7 +75,7 @@ For more research I setup a simulated system in vm-ware and it worked as expecte
 The short answer is: the transmission speed of mobile internet, at least in my place, constantly and unpredictably changes very fast.
 
 The detailed answer can be seen in the following graphic:
-![BandWIth](https://github.com/kochelmonster/gobonding/blob/main/assets/overview.png?raw=true)
+![BandWIth](https://github.com/kochelmonster/gobonding/blob/main/assets/tooslow.png?raw=true)
 
 The accumulated bandwidth is only obtained if the data packets are correctly divided between the channels.
 
